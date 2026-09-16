@@ -1787,16 +1787,24 @@ local function hideTracerVisuals()
 end
 
 local function getLocalAimRoot(): (BasePart?, Humanoid?, Model?)
+	local function findRoot(character: Model): BasePart?
+		local root = character:FindFirstChild("HumanoidRootPart", true)
+		if root and root:IsA("BasePart") then return root end
+		local humanoid = character:FindFirstChildWhichIsA("Humanoid", true)
+		if humanoid and humanoid.RootPart then return humanoid.RootPart end
+		if character.PrimaryPart then return character.PrimaryPart end
+		return getBodyPart(character, "RootPart", "Root")
+	end
 	local character = player.Character
-	local root = if character then character:FindFirstChild("HumanoidRootPart", true) else nil
-	if root and root:IsA("BasePart") then
+	local root = if character then findRoot(character) else nil
+	if root then
 		return root, character:FindFirstChildWhichIsA("Humanoid", true), character
 	end
 	if charactersFolder then
 		for _, descendant in ipairs(charactersFolder:GetDescendants()) do
 			if descendant:IsA("Model") and isLocalPlayerModel(descendant) then
-				local localRoot = descendant:FindFirstChild("HumanoidRootPart", true)
-				if localRoot and localRoot:IsA("BasePart") then
+				local localRoot = findRoot(descendant)
+				if localRoot then
 					return localRoot, descendant:FindFirstChildWhichIsA("Humanoid", true), descendant
 				end
 			end
@@ -1821,7 +1829,7 @@ local function getAimMuzzlePosition(character: Model): Vector3?
 	return nil
 end
 
-RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 1, function()
+RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value + 1, function()
 	if not aimEnabled then return end
 
 	local camera = workspace.CurrentCamera
@@ -1900,12 +1908,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 	end
 
 	local root, humanoid, character = getLocalAimRoot()
-	if not root or not root.Parent then
-		setAimStatus("AIM: own character unavailable")
-		restoreAimCameraControl()
-		restoreAimAutoRotate()
-		return
-	end
+	local hasRoot = root ~= nil and root.Parent ~= nil
 	if not savedAimCamera then
 		savedAimCamera = camera
 		savedAimCameraType = camera.CameraType
@@ -1932,34 +1935,38 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 		end
 	end
 
-	local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
-	local toTarget = horizontalTarget - root.Position
-	local distance = toTarget.Magnitude
-	if distance > 0.01 then
-		local direction = toTarget / distance
-		local muzzlePosition = if character then getAimMuzzlePosition(character) else nil
-		if muzzlePosition then
-			local rightOffset = root.CFrame:PointToObjectSpace(muzzlePosition).X
-			if math.abs(rightOffset) < distance then
-				local correction = -math.asin(rightOffset / distance)
-				local right = Vector3.new(-direction.Z, 0, direction.X)
-				direction = direction * math.cos(correction) + right * math.sin(correction)
+	if hasRoot and root then
+		local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
+		local toTarget = horizontalTarget - root.Position
+		local distance = toTarget.Magnitude
+		if distance > 0.01 then
+			local direction = toTarget / distance
+			local muzzlePosition = if character then getAimMuzzlePosition(character) else nil
+			if muzzlePosition then
+				local rightOffset = root.CFrame:PointToObjectSpace(muzzlePosition).X
+				if math.abs(rightOffset) < distance then
+					local correction = -math.asin(rightOffset / distance)
+					local right = Vector3.new(-direction.Z, 0, direction.X)
+					direction = direction * math.cos(correction) + right * math.sin(correction)
+				end
 			end
+			root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
 		end
-		root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
 	end
 
 	local cameraPosition = camera.CFrame.Position
-	if savedAimCameraOffset then
-		cameraPosition = root.CFrame:PointToWorldSpace(savedAimCameraOffset)
-	else
-		savedAimCameraOffset = root.CFrame:PointToObjectSpace(cameraPosition)
+	if hasRoot and root then
+		if savedAimCameraOffset then
+			cameraPosition = root.CFrame:PointToWorldSpace(savedAimCameraOffset)
+		else
+			savedAimCameraOffset = root.CFrame:PointToObjectSpace(cameraPosition)
+		end
 	end
 	if (aimPoint - cameraPosition).Magnitude > 0.01 then
 		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
 		camera.Focus = CFrame.new(aimPoint)
 	end
-	setAimStatus("AIM: target locked")
+	setAimStatus(if hasRoot then "AIM: target locked" else "AIM: camera locked; character missing")
 end)
 
 RunService.RenderStepped:Connect(function()
