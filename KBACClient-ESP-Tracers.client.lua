@@ -1725,23 +1725,39 @@ local function hideTracerVisuals()
 	for _, arrow in pairs(tracerArrows) do arrow.Visible = false end
 end
 
-local function getLocalAimRoot(): (BasePart?, Humanoid?)
+local function getLocalAimRoot(): (BasePart?, Humanoid?, Model?)
 	local character = player.Character
 	local root = if character then character:FindFirstChild("HumanoidRootPart", true) else nil
 	if root and root:IsA("BasePart") then
-		return root, character:FindFirstChildWhichIsA("Humanoid", true)
+		return root, character:FindFirstChildWhichIsA("Humanoid", true), character
 	end
 	if charactersFolder then
 		for _, descendant in ipairs(charactersFolder:GetDescendants()) do
 			if descendant:IsA("Model") and isLocalPlayerModel(descendant) then
 				local localRoot = descendant:FindFirstChild("HumanoidRootPart", true)
 				if localRoot and localRoot:IsA("BasePart") then
-					return localRoot, descendant:FindFirstChildWhichIsA("Humanoid", true)
+					return localRoot, descendant:FindFirstChildWhichIsA("Humanoid", true), descendant
 				end
 			end
 		end
 	end
-	return nil, nil
+	return nil, nil, nil
+end
+
+local aimMuzzleNames = {"Muzzle", "MuzzleAttachment", "BarrelEnd", "FirePoint", "ShootPoint"}
+local function getAimMuzzlePosition(character: Model): Vector3?
+	local weapon = character:FindFirstChildWhichIsA("Tool")
+	local searchRoot: Instance = weapon or character
+	for _, name in ipairs(aimMuzzleNames) do
+		local muzzle = searchRoot:FindFirstChild(name, true)
+		if muzzle and muzzle:IsA("Attachment") then return muzzle.WorldPosition end
+		if muzzle and muzzle:IsA("BasePart") then return muzzle.Position end
+	end
+	if weapon then
+		local handle = weapon:FindFirstChild("Handle", true)
+		if handle and handle:IsA("BasePart") then return handle.Position end
+	end
+	return nil
 end
 
 RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 1, function()
@@ -1787,7 +1803,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
 	end
 
-	local root, humanoid = getLocalAimRoot()
+	local root, humanoid, character = getLocalAimRoot()
 	if humanoid ~= savedAimHumanoid then
 		restoreAimAutoRotate()
 		if humanoid then
@@ -1798,8 +1814,21 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 	end
 	if root and root.Parent then
 		local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
-		if (horizontalTarget - root.Position).Magnitude > 0.01 then
-			root.CFrame = CFrame.lookAt(root.Position, horizontalTarget)
+		local toTarget = horizontalTarget - root.Position
+		local distance = toTarget.Magnitude
+		if distance > 0.01 then
+			local direction = toTarget / distance
+			local muzzlePosition = if character then getAimMuzzlePosition(character) else nil
+			if muzzlePosition then
+				-- Rotate the muzzle's offset onto the target's horizontal line.
+				local rightOffset = root.CFrame:PointToObjectSpace(muzzlePosition).X
+				if math.abs(rightOffset) < distance then
+					local correction = -math.asin(rightOffset / distance)
+					local right = Vector3.new(-direction.Z, 0, direction.X)
+					direction = direction * math.cos(correction) + right * math.sin(correction)
+				end
+			end
+			root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
 		end
 	end
 end)
