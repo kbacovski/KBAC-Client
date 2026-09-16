@@ -1339,6 +1339,13 @@ aimOverlayGui.DisplayOrder = gui.DisplayOrder + 1
 aimOverlayGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 aimOverlayGui.Parent = playerGui
 
+local aimOverlayRoot = Instance.new("Frame")
+aimOverlayRoot.Name = "AimOverlayRoot"
+aimOverlayRoot.Size = UDim2.fromScale(1, 1)
+aimOverlayRoot.BackgroundTransparency = 1
+aimOverlayRoot.BorderSizePixel = 0
+aimOverlayRoot.Parent = aimOverlayGui
+
 local aimCircle = Instance.new("Frame")
 aimCircle.Name = "AimFOVCircle"
 aimCircle.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1348,7 +1355,7 @@ aimCircle.BackgroundTransparency = 1
 aimCircle.BorderSizePixel = 0
 aimCircle.Visible = false
 aimCircle.ZIndex = 120
-aimCircle.Parent = aimOverlayGui
+aimCircle.Parent = aimOverlayRoot
 local aimCircleCorner = corner(aimCircle, 0)
 aimCircleCorner.CornerRadius = UDim.new(1, 0)
 local aimCircleStroke = stroke(aimCircle, 0.1, 2)
@@ -1382,6 +1389,9 @@ aimTitle.Parent = aimOpen
 local aimDescription = tracerDescription:Clone()
 aimDescription.Text = "Target lock; move mouse to release"
 aimDescription.Parent = aimOpen
+local function setAimStatus(message: string)
+	if aimDescription.Text ~= message then aimDescription.Text = message end
+end
 
 local aimToggle = tracerToggle:Clone()
 aimToggle.Name = "AimToggle"
@@ -1526,6 +1536,7 @@ refreshAimSize()
 
 local function setAimEnabled(shouldEnable: boolean)
 	aimEnabled = shouldEnable
+	setAimStatus(if aimEnabled then "AIM: searching for a target" else "AIM: off")
 	TweenService:Create(aimToggle, quickTween, {
 		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
 		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
@@ -1669,6 +1680,18 @@ local function getBodyPart(model: Model, ...: string): BasePart?
 	return nil
 end
 
+local function getAimCandidates(): {[Model]: boolean}
+	local candidates: {[Model]: boolean} = {}
+	for model in pairs(trackedHighlights) do candidates[model] = true end
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		local character = otherPlayer.Character
+		if otherPlayer ~= player and character and character.Parent then
+			candidates[character] = true
+		end
+	end
+	return candidates
+end
+
 local function getSkeletonPairs(model: Model)
 	local pairsList = {}
 	local head = getBodyPart(model, "Head")
@@ -1803,6 +1826,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 
 	local camera = workspace.CurrentCamera
 	if not camera then
+		setAimStatus("AIM: camera unavailable")
 		lockedAimModel = nil
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
@@ -1813,12 +1837,13 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 	local viewport = camera.ViewportSize
 	local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
 	local useViewport = viewport.X > 2 and viewport.Y > 2
-	local overlaySize = aimOverlayGui.AbsoluteSize
+	local overlaySize = aimOverlayRoot.AbsoluteSize
+	local aimCandidates = getAimCandidates()
 
 	local targetPart: BasePart? = nil
 	if lockedAimModel then
 		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
-		if lockedAimModel.Parent and trackedHighlights[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
+		if lockedAimModel.Parent and aimCandidates[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
 			targetPart = getBodyPart(lockedAimModel, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
 		else
 			lockedAimModel = nil
@@ -1827,7 +1852,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 
 	if not lockedAimModel then
 		local closestDistance = aimRadius
-		for model in pairs(trackedHighlights) do
+		for model in pairs(aimCandidates) do
 			if model.Parent and not isLocalPlayerModel(model) then
 				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 				if not humanoid or humanoid.Health > 0 then
@@ -1858,22 +1883,25 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 	end
 
 	if not targetPart or not targetPart.Parent then
+		setAimStatus(if next(aimCandidates) then "AIM: no target in circle" else "AIM: no characters found")
 		lockedAimModel = nil
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
 		return
 	end
 
-	if savedAimCamera and not panel.Visible and UserInputService.MouseEnabled and os.clock() - aimLockStartedAt > 0.25 then
+	if savedAimCamera and not panel.Visible and UserInputService.MouseEnabled and os.clock() - aimLockStartedAt > 0.4 then
 		aimMouseTravel += UserInputService:GetMouseDelta().Magnitude
-		if aimMouseTravel >= 65 then
+		if aimMouseTravel >= 150 then
 			setAimEnabled(false)
+			setAimStatus("AIM: released by mouse")
 			return
 		end
 	end
 
 	local root, humanoid, character = getLocalAimRoot()
 	if not root or not root.Parent then
+		setAimStatus("AIM: own character unavailable")
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
 		return
@@ -1931,6 +1959,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
 		camera.Focus = CFrame.new(aimPoint)
 	end
+	setAimStatus("AIM: target locked")
 end)
 
 RunService.RenderStepped:Connect(function()
