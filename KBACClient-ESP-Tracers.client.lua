@@ -1301,6 +1301,13 @@ local aimRadius = 120
 local aimColor = Color3.fromRGB(255, 70, 82)
 local savedAimHumanoid: Humanoid? = nil
 local savedAutoRotate: boolean? = nil
+local savedAimCamera: Camera? = nil
+local savedAimCameraType = Enum.CameraType.Custom
+local savedAimMouseBehavior = Enum.MouseBehavior.Default
+local savedAimCameraOffset: Vector3? = nil
+local lockedAimModel: Model? = nil
+local aimLockStartedAt = 0
+local aimMouseTravel = 0
 
 local function restoreAimAutoRotate()
 	if savedAimHumanoid and savedAimHumanoid.Parent and savedAutoRotate ~= nil then
@@ -1308,6 +1315,16 @@ local function restoreAimAutoRotate()
 	end
 	savedAimHumanoid = nil
 	savedAutoRotate = nil
+end
+
+local function restoreAimCameraControl()
+	if savedAimCamera then
+		if savedAimCamera.Parent then savedAimCamera.CameraType = savedAimCameraType end
+		UserInputService.MouseBehavior = savedAimMouseBehavior
+	end
+	savedAimCamera = nil
+	savedAimCameraOffset = nil
+	aimMouseTravel = 0
 end
 
 local aimCircle = Instance.new("Frame")
@@ -1350,7 +1367,7 @@ local aimTitle = tracerTitle:Clone()
 aimTitle.Text = "AIM"
 aimTitle.Parent = aimOpen
 local aimDescription = tracerDescription:Clone()
-aimDescription.Text = "Camera + character aim inside the circle"
+aimDescription.Text = "Target lock; move mouse to release"
 aimDescription.Parent = aimOpen
 
 local aimToggle = tracerToggle:Clone()
@@ -1494,8 +1511,8 @@ UserInputService.InputEnded:Connect(function(input: InputObject)
 end)
 refreshAimSize()
 
-aimToggle.Activated:Connect(function()
-	aimEnabled = not aimEnabled
+local function setAimEnabled(shouldEnable: boolean)
+	aimEnabled = shouldEnable
 	TweenService:Create(aimToggle, quickTween, {
 		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
 		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
@@ -1504,7 +1521,15 @@ aimToggle.Activated:Connect(function()
 		Position = aimEnabled and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
 	}):Play()
 	aimCircle.Visible = aimEnabled
-	if not aimEnabled then restoreAimAutoRotate() end
+	if not aimEnabled then
+		lockedAimModel = nil
+		restoreAimCameraControl()
+		restoreAimAutoRotate()
+	end
+end
+
+aimToggle.Activated:Connect(function()
+	setAimEnabled(not aimEnabled)
 end)
 
 aimOpen.Activated:Connect(function()
@@ -1762,30 +1787,53 @@ end
 
 RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 1, function()
 	if not aimEnabled then return end
-	local camera = workspace.CurrentCamera
-	if not camera then
+	if panel.Visible then
+		lockedAimModel = nil
+		restoreAimCameraControl()
 		restoreAimAutoRotate()
 		return
 	end
+
+	local camera = workspace.CurrentCamera
+	if not camera then
+		lockedAimModel = nil
+		restoreAimCameraControl()
+		restoreAimAutoRotate()
+		return
+	end
+	if savedAimCamera and savedAimCamera ~= camera then restoreAimCameraControl() end
+
 	local viewport = camera.ViewportSize
 	local topLeftInset = GuiService:GetGuiInset()
 	local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
 	aimCircle.Position = UDim2.fromOffset(screenCenter.X - topLeftInset.X, screenCenter.Y - topLeftInset.Y)
 
-	local closestPart: BasePart? = nil
-	local closestDistance = aimRadius
-	for model in pairs(trackedHighlights) do
-		if model.Parent and not isLocalPlayerModel(model) then
-			local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
-			if not humanoid or humanoid.Health > 0 then
-				local part = getBodyPart(model, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
-				if part then
-					local point, onScreen = camera:WorldToViewportPoint(part.Position)
-					if onScreen and point.Z > 0 then
-						local distance = (Vector2.new(point.X, point.Y) - screenCenter).Magnitude
-						if distance <= closestDistance then
-							closestDistance = distance
-							closestPart = part
+	local targetPart: BasePart? = nil
+	if lockedAimModel then
+		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
+		if lockedAimModel.Parent and trackedHighlights[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
+			targetPart = getBodyPart(lockedAimModel, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
+		else
+			lockedAimModel = nil
+		end
+	end
+
+	if not lockedAimModel then
+		local closestDistance = aimRadius
+		for model in pairs(trackedHighlights) do
+			if model.Parent and not isLocalPlayerModel(model) then
+				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
+				if not humanoid or humanoid.Health > 0 then
+					local part = getBodyPart(model, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
+					if part then
+						local point, onScreen = camera:WorldToViewportPoint(part.Position)
+						if onScreen and point.Z > 0 then
+							local distance = (Vector2.new(point.X, point.Y) - screenCenter).Magnitude
+							if distance <= closestDistance then
+								closestDistance = distance
+								targetPart = part
+								lockedAimModel = model
+							end
 						end
 					end
 				end
@@ -1793,17 +1841,38 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 		end
 	end
 
-	if not closestPart or not closestPart.Parent then
+	if not targetPart or not targetPart.Parent then
+		lockedAimModel = nil
+		restoreAimCameraControl()
 		restoreAimAutoRotate()
 		return
 	end
-	local aimPoint = closestPart.Position
-	local cameraPosition = camera.CFrame.Position
-	if (aimPoint - cameraPosition).Magnitude > 0.01 then
-		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
+
+	if savedAimCamera and UserInputService.MouseEnabled and os.clock() - aimLockStartedAt > 0.25 then
+		aimMouseTravel += UserInputService:GetMouseDelta().Magnitude
+		if aimMouseTravel >= 65 then
+			setAimEnabled(false)
+			return
+		end
 	end
 
 	local root, humanoid, character = getLocalAimRoot()
+	if not root or not root.Parent then
+		restoreAimCameraControl()
+		restoreAimAutoRotate()
+		return
+	end
+	if not savedAimCamera then
+		savedAimCamera = camera
+		savedAimCameraType = camera.CameraType
+		savedAimMouseBehavior = UserInputService.MouseBehavior
+		aimLockStartedAt = os.clock()
+		aimMouseTravel = 0
+	end
+	camera.CameraType = Enum.CameraType.Scriptable
+	if UserInputService.MouseEnabled then UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter end
+
+	local aimPoint = targetPart.Position
 	if humanoid ~= savedAimHumanoid then
 		restoreAimAutoRotate()
 		if humanoid then
@@ -1812,24 +1881,33 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 			humanoid.AutoRotate = false
 		end
 	end
-	if root and root.Parent then
-		local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
-		local toTarget = horizontalTarget - root.Position
-		local distance = toTarget.Magnitude
-		if distance > 0.01 then
-			local direction = toTarget / distance
-			local muzzlePosition = if character then getAimMuzzlePosition(character) else nil
-			if muzzlePosition then
-				-- Rotate the muzzle's offset onto the target's horizontal line.
-				local rightOffset = root.CFrame:PointToObjectSpace(muzzlePosition).X
-				if math.abs(rightOffset) < distance then
-					local correction = -math.asin(rightOffset / distance)
-					local right = Vector3.new(-direction.Z, 0, direction.X)
-					direction = direction * math.cos(correction) + right * math.sin(correction)
-				end
+
+	local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
+	local toTarget = horizontalTarget - root.Position
+	local distance = toTarget.Magnitude
+	if distance > 0.01 then
+		local direction = toTarget / distance
+		local muzzlePosition = if character then getAimMuzzlePosition(character) else nil
+		if muzzlePosition then
+			local rightOffset = root.CFrame:PointToObjectSpace(muzzlePosition).X
+			if math.abs(rightOffset) < distance then
+				local correction = -math.asin(rightOffset / distance)
+				local right = Vector3.new(-direction.Z, 0, direction.X)
+				direction = direction * math.cos(correction) + right * math.sin(correction)
 			end
-			root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
 		end
+		root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
+	end
+
+	local cameraPosition = camera.CFrame.Position
+	if savedAimCameraOffset then
+		cameraPosition = root.CFrame:PointToWorldSpace(savedAimCameraOffset)
+	else
+		savedAimCameraOffset = root.CFrame:PointToObjectSpace(cameraPosition)
+	end
+	if (aimPoint - cameraPosition).Magnitude > 0.01 then
+		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
+		camera.Focus = CFrame.new(aimPoint)
 	end
 end)
 
@@ -2067,6 +2145,7 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
 	RunService:UnbindFromRenderStep("KBACClientAim")
+	restoreAimCameraControl()
 	restoreAimAutoRotate()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
 	if effectsFolder.Parent then effectsFolder:Destroy() end
