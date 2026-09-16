@@ -539,8 +539,7 @@ createCategoryButton("Other", 3)
 local espEnabled = false
 local espExpanded = false
 local espMode = "Highlight"
-local espRGB: {[string]: number} = {R = 255, G = 45, B = 55}
-local espColor = Color3.fromRGB(espRGB.R, espRGB.G, espRGB.B)
+local espColor = Color3.fromRGB(255, 70, 82)
 
 local espOverlay = Instance.new("Frame")
 espOverlay.Name = "ESPOverlay"
@@ -789,7 +788,6 @@ local function scanCharacters()
 end
 
 local function refreshESPVisuals()
-	espColor = Color3.fromRGB(espRGB.R, espRGB.G, espRGB.B)
 	for model, playerEffect in pairs(trackedHighlights) do
 		if not model.Parent then
 			destroyTracked(model)
@@ -888,7 +886,7 @@ corner(toggleKnob, 12)
 local settings = Instance.new("Frame")
 settings.Name = "Settings"
 settings.Position = UDim2.fromOffset(12, 76)
-settings.Size = UDim2.new(1, -24, 0, 174)
+settings.Size = UDim2.new(1, -24, 0, 128)
 settings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
 settings.BackgroundTransparency = 0.54
 settings.BorderSizePixel = 0
@@ -960,25 +958,25 @@ colorTitle.ZIndex = 19
 colorTitle.Parent = settings
 
 local palette = Instance.new("Frame")
-palette.Name = "ColorWheel"
-palette.AnchorPoint = Vector2.new(0.5, 0)
-palette.Position = UDim2.new(0.5, 0, 0, 75)
-palette.Size = UDim2.fromOffset(116, 94)
+palette.Name = "ColorPalette"
+palette.Position = UDim2.fromOffset(12, 91)
+palette.Size = UDim2.new(1, -24, 0, 26)
 palette.BackgroundTransparency = 1
 palette.BorderSizePixel = 0
 palette.ZIndex = 20
 palette.Parent = settings
+local paletteLayout = Instance.new("UIListLayout")
+paletteLayout.FillDirection = Enum.FillDirection.Horizontal
+paletteLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+paletteLayout.Padding = UDim.new(0, 8)
+paletteLayout.Parent = palette
 
-local paletteEntries: {{Button: TextButton, Stroke: UIStroke, Color: Color3}} = {}
-
-local function colorsClose(a: Color3, b: Color3): boolean
-	return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < 0.04
-end
+local paletteEntries: {{Stroke: UIStroke, Color: Color3}} = {}
 
 local function updateColorUI()
 	for _, entry in ipairs(paletteEntries) do
-		local selected = colorsClose(entry.Color, espColor)
-		entry.Stroke.Transparency = selected and 0.02 or 0.68
+		local selected = entry.Color == espColor
+		entry.Stroke.Transparency = selected and 0.05 or 0.65
 		entry.Stroke.Thickness = selected and 2 or 1
 	end
 	refreshESPVisuals()
@@ -986,48 +984,30 @@ end
 
 local function selectPaletteColor(color: Color3)
 	espColor = color
-	espRGB.R = math.round(color.R * 255)
-	espRGB.G = math.round(color.G * 255)
-	espRGB.B = math.round(color.B * 255)
 	updateColorUI()
 end
 
-local function createPaletteButton(color: Color3, x: number, y: number, size: number)
+for _, color in ipairs({
+	Color3.fromRGB(255, 70, 82), Color3.fromRGB(255, 170, 45),
+	Color3.fromRGB(255, 235, 70), Color3.fromRGB(70, 235, 135),
+	Color3.fromRGB(70, 190, 255), Color3.fromRGB(150, 105, 255),
+	Color3.fromRGB(255, 105, 220), Color3.fromRGB(255, 255, 255),
+}) do
 	local button = Instance.new("TextButton")
-	button.AnchorPoint = Vector2.new(0.5, 0.5)
-	button.Position = UDim2.fromOffset(x, y)
-	button.Size = UDim2.fromOffset(size, size)
+	button.Size = UDim2.fromOffset(24, 24)
 	button.BackgroundColor3 = color
 	button.BorderSizePixel = 0
 	button.Text = ""
 	button.AutoButtonColor = false
 	button.ZIndex = 21
 	button.Parent = palette
-	corner(button, math.floor(size * 0.5))
-	local outline = stroke(button, 0.68, 1)
-	table.insert(paletteEntries, {Button = button, Stroke = outline, Color = color})
+	corner(button, 12)
+	local outline = stroke(button, 0.65, 1)
+	table.insert(paletteEntries, {Stroke = outline, Color = color})
 	button.Activated:Connect(function()
 		selectPaletteColor(color)
-		TweenService:Create(button, TweenInfo.new(0.08), {Size = UDim2.fromOffset(size + 4, size + 4)}):Play()
-		task.delay(0.09, function()
-			if button.Parent then TweenService:Create(button, TweenInfo.new(0.12), {Size = UDim2.fromOffset(size, size)}):Play() end
-		end)
 	end)
 end
-
-local centerX, centerY, radius = 58, 48, 37
-for index = 1, 16 do
-	local angle = math.rad(-90 + (index - 1) * (360 / 16))
-	local hue = (index - 1) / 16
-	local swatchColor = if index == 1 then espColor else Color3.fromHSV(hue, 0.88, 1)
-	createPaletteButton(
-		swatchColor,
-		centerX + math.cos(angle) * radius,
-		centerY + math.sin(angle) * radius,
-		17
-	)
-end
-createPaletteButton(Color3.fromRGB(255, 255, 255), centerX, centerY, 27)
 updateColorUI()
 
 --============================================================
@@ -1579,7 +1559,7 @@ cardButton.Activated:Connect(function()
 	espExpanded = not espExpanded
 	settings.Visible = true
 	TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-		Size = UDim2.new(1, -10, 0, espExpanded and 262 or 68),
+		Size = UDim2.new(1, -10, 0, espExpanded and 216 or 68),
 	}):Play()
 	if not espExpanded then task.delay(0.25, function() if not espExpanded then settings.Visible = false end end) end
 end)
