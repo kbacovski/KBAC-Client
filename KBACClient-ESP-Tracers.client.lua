@@ -554,7 +554,6 @@ espOverlay.Parent = gui
 
 type PlayerPartEffect = {Fill: BoxHandleAdornment, Glow: BoxHandleAdornment}
 local trackedHighlights: {[Model]: Folder} = {}
-local looseAimModels: {[Model]: boolean} = {}
 local trackedPlayerParts: {[Model]: {[BasePart]: PlayerPartEffect}} = {}
 local trackedBoxes: {[Model]: Frame} = {}
 local trackedSkeletons: {[Model]: Frame} = {}
@@ -767,7 +766,6 @@ local function scanCharacters()
 		for model in pairs(trackedHighlights) do table.insert(staleModels, model) end
 		for _, model in ipairs(staleModels) do destroyTracked(model) end
 		cleanedCharactersFolder = nil
-		looseAimModels = {}
 		return
 	end
 	if cleanedCharactersFolder ~= charactersFolder then
@@ -779,19 +777,12 @@ local function scanCharacters()
 		cleanedCharactersFolder = charactersFolder
 	end
 	local currentModels: {[Model]: boolean} = {}
-	local currentAimModels: {[Model]: boolean} = {}
 	for _, descendant in ipairs(charactersFolder:GetDescendants()) do
-		if descendant:IsA("Model") then
-			if not isLocalPlayerModel(descendant) and (descendant:FindFirstChild("Head", true) or descendant:FindFirstChild("HumanoidRootPart", true) or descendant:FindFirstChild("Torso", true)) then
-				currentAimModels[descendant] = true
-			end
-			if looksLikeCharacter(descendant) then
-				currentModels[descendant] = true
-				trackModel(descendant)
-			end
+		if descendant:IsA("Model") and looksLikeCharacter(descendant) then
+			currentModels[descendant] = true
+			trackModel(descendant)
 		end
 	end
-	looseAimModels = currentAimModels
 	local staleModels = {}
 	for model in pairs(trackedHighlights) do
 		if not currentModels[model] then table.insert(staleModels, model) end
@@ -1371,23 +1362,6 @@ aimCircleCorner.CornerRadius = UDim.new(1, 0)
 local aimCircleStroke = stroke(aimCircle, 0.1, 2)
 aimCircleStroke.Color = aimColor
 
-local aimStatusLabel = Instance.new("TextLabel")
-aimStatusLabel.Name = "AimStatus"
-aimStatusLabel.AnchorPoint = Vector2.new(0.5, 0)
-aimStatusLabel.Position = UDim2.new(0.5, 0, 0.5, aimRadius + 10)
-aimStatusLabel.Size = UDim2.fromOffset(340, 26)
-aimStatusLabel.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
-aimStatusLabel.BackgroundTransparency = 0.35
-aimStatusLabel.BorderSizePixel = 0
-aimStatusLabel.Text = "AIM: off"
-aimStatusLabel.TextColor3 = aimColor
-aimStatusLabel.TextSize = 13
-aimStatusLabel.Font = Enum.Font.GothamSemibold
-aimStatusLabel.Visible = false
-aimStatusLabel.ZIndex = 121
-aimStatusLabel.Parent = aimOverlayRoot
-corner(aimStatusLabel, 8)
-
 local aimCard = Instance.new("Frame")
 aimCard.Name = "AimCard"
 aimCard.Size = UDim2.new(1, -10, 0, 68)
@@ -1418,7 +1392,6 @@ aimDescription.Text = "Target lock; move mouse to release"
 aimDescription.Parent = aimOpen
 local function setAimStatus(message: string)
 	if aimDescription.Text ~= message then aimDescription.Text = message end
-	if aimStatusLabel.Text ~= message then aimStatusLabel.Text = message end
 end
 
 local aimToggle = tracerToggle:Clone()
@@ -1530,7 +1503,6 @@ local function refreshAimSize()
 	local alpha = (aimRadius - 30) / 270
 	aimSizeValue.Text = tostring(aimRadius) .. " px"
 	aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
-	aimStatusLabel.Position = UDim2.new(0.5, 0, 0.5, aimRadius + 10)
 	aimSizeFill.Size = UDim2.new(alpha, 0, 1, 0)
 	aimSizeFill.BackgroundColor3 = aimColor
 	aimSizeKnob.Position = UDim2.new(alpha, 0, 0.5, 0)
@@ -1565,7 +1537,7 @@ refreshAimSize()
 
 local function setAimEnabled(shouldEnable: boolean)
 	aimEnabled = shouldEnable
-	setAimStatus(if aimEnabled then "AIM: searching for a target" else "AIM: off")
+	setAimStatus("Target lock; move mouse to release")
 	TweenService:Create(aimToggle, quickTween, {
 		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
 		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
@@ -1574,7 +1546,6 @@ local function setAimEnabled(shouldEnable: boolean)
 		Position = aimEnabled and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
 	}):Play()
 	aimCircle.Visible = aimEnabled
-	aimStatusLabel.Visible = aimEnabled
 	if not aimEnabled then
 		lockedAimModel = nil
 		lockedAimPart = nil
@@ -1709,19 +1680,6 @@ local function getBodyPart(model: Model, ...: string): BasePart?
 		if part and part:IsA("BasePart") then return part end
 	end
 	return nil
-end
-
-local function getAimCandidates(): {[Model]: boolean}
-	local candidates: {[Model]: boolean} = {}
-	for model in pairs(trackedHighlights) do candidates[model] = true end
-	for model in pairs(looseAimModels) do candidates[model] = true end
-	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		local character = otherPlayer.Character
-		if otherPlayer ~= player and character and character.Parent then
-			candidates[character] = true
-		end
-	end
-	return candidates
 end
 
 local function getSkeletonPairs(model: Model)
@@ -1861,7 +1819,7 @@ local function getAimMuzzlePosition(character: Model): Vector3?
 	return nil
 end
 
-RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value + 1, function()
+RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, function()
 	if not aimEnabled then return end
 
 	local camera = workspace.CurrentCamera
@@ -1878,17 +1836,24 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value + 1,
 	local overlaySize = aimOverlayRoot.AbsoluteSize
 	local viewHeight = if overlaySize.Y > 2 then overlaySize.Y else viewport.Y
 	local focalLength = if viewHeight > 2 then viewHeight / (2 * math.tan(math.rad(camera.FieldOfView) * 0.5)) else 0
-	local aimCandidates = getAimCandidates()
+	local aimCandidates = trackedHighlights
 
 	local targetPart: BasePart? = nil
 	if lockedAimModel then
 		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
 		if lockedAimModel.Parent and aimCandidates[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
-			targetPart = if lockedAimPart and lockedAimPart:IsDescendantOf(lockedAimModel) then lockedAimPart else getBodyPart(lockedAimModel, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
+			local highlightedParts = trackedPlayerParts[lockedAimModel]
+			if lockedAimPart and highlightedParts and highlightedParts[lockedAimPart] and lockedAimPart.Parent then
+				targetPart = lockedAimPart
+			end
 		else
 			lockedAimModel = nil
 			lockedAimPart = nil
 		end
+	end
+	if lockedAimModel and not targetPart then
+		lockedAimModel = nil
+		lockedAimPart = nil
 	end
 
 	if not lockedAimModel then
@@ -1899,25 +1864,27 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value + 1,
 			if model.Parent and not isLocalPlayerModel(model) then
 				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 				if not humanoid or humanoid.Health > 0 then
-					for _, name in ipairs({"Head", "UpperTorso", "Torso", "HumanoidRootPart"}) do
-						local part = model:FindFirstChild(name, true)
-						if part and part:IsA("BasePart") then
-							candidateCount += 1
-							local point = camera.CFrame:PointToObjectSpace(part.Position)
-							if point.Z < -0.01 and focalLength > 0 then
-								local distance = Vector2.new(point.X, point.Y).Magnitude * focalLength / -point.Z
-								nearestDistance = math.min(nearestDistance, distance)
-								if distance <= closestDistance then
-									closestDistance = distance
-									targetPart = part
-									lockedAimModel = model
-									lockedAimPart = part
+					local highlightedParts = trackedPlayerParts[model]
+					if highlightedParts then
+						for part in pairs(highlightedParts) do
+							if part.Parent and part:IsDescendantOf(model) then
+								candidateCount += 1
+								local point = camera.CFrame:PointToObjectSpace(part.Position)
+								if point.Z < -0.01 and focalLength > 0 then
+									local distance = Vector2.new(point.X, point.Y).Magnitude * focalLength / -point.Z
+									nearestDistance = math.min(nearestDistance, distance)
+									if distance <= closestDistance then
+										closestDistance = distance
+										targetPart = part
+										lockedAimModel = model
+										lockedAimPart = part
+									end
+								end
 							end
 						end
 					end
 				end
 			end
-		end
 		end
 		if not targetPart then
 			if candidateCount == 0 then
