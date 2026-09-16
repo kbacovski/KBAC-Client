@@ -1330,6 +1330,7 @@ end
 local aimCircle = Instance.new("Frame")
 aimCircle.Name = "AimFOVCircle"
 aimCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+aimCircle.Position = UDim2.fromScale(0.5, 0.5)
 aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
 aimCircle.BackgroundTransparency = 1
 aimCircle.BorderSizePixel = 0
@@ -1340,6 +1341,14 @@ local aimCircleCorner = corner(aimCircle, 0)
 aimCircleCorner.CornerRadius = UDim.new(1, 0)
 local aimCircleStroke = stroke(aimCircle, 0.1, 2)
 aimCircleStroke.Color = aimColor
+
+local function positionAimCircle()
+	local camera = workspace.CurrentCamera
+	if not camera then return end
+	local viewport = camera.ViewportSize
+	local topLeftInset = GuiService:GetGuiInset()
+	aimCircle.Position = UDim2.fromOffset(viewport.X * 0.5 - topLeftInset.X, viewport.Y * 0.5 - topLeftInset.Y)
+end
 
 local aimCard = Instance.new("Frame")
 aimCard.Name = "AimCard"
@@ -1513,6 +1522,7 @@ refreshAimSize()
 
 local function setAimEnabled(shouldEnable: boolean)
 	aimEnabled = shouldEnable
+	if aimEnabled then positionAimCircle() end
 	TweenService:Create(aimToggle, quickTween, {
 		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
 		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
@@ -1787,12 +1797,7 @@ end
 
 RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 1, function()
 	if not aimEnabled then return end
-	if panel.Visible then
-		lockedAimModel = nil
-		restoreAimCameraControl()
-		restoreAimAutoRotate()
-		return
-	end
+	positionAimCircle()
 
 	local camera = workspace.CurrentCamera
 	if not camera then
@@ -1804,9 +1809,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 	if savedAimCamera and savedAimCamera ~= camera then restoreAimCameraControl() end
 
 	local viewport = camera.ViewportSize
-	local topLeftInset = GuiService:GetGuiInset()
 	local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
-	aimCircle.Position = UDim2.fromOffset(screenCenter.X - topLeftInset.X, screenCenter.Y - topLeftInset.Y)
 
 	local targetPart: BasePart? = nil
 	if lockedAimModel then
@@ -1848,7 +1851,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 		return
 	end
 
-	if savedAimCamera and UserInputService.MouseEnabled and os.clock() - aimLockStartedAt > 0.25 then
+	if savedAimCamera and not panel.Visible and UserInputService.MouseEnabled and os.clock() - aimLockStartedAt > 0.25 then
 		aimMouseTravel += UserInputService:GetMouseDelta().Magnitude
 		if aimMouseTravel >= 65 then
 			setAimEnabled(false)
@@ -1869,8 +1872,14 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 		aimLockStartedAt = os.clock()
 		aimMouseTravel = 0
 	end
+	if panel.Visible then
+		aimLockStartedAt = os.clock()
+		aimMouseTravel = 0
+	end
 	camera.CameraType = Enum.CameraType.Scriptable
-	if UserInputService.MouseEnabled then UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter end
+	if UserInputService.MouseEnabled then
+		UserInputService.MouseBehavior = if panel.Visible then Enum.MouseBehavior.Default else Enum.MouseBehavior.LockCenter
+	end
 
 	local aimPoint = targetPart.Position
 	if humanoid ~= savedAimHumanoid then
