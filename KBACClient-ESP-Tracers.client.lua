@@ -554,6 +554,7 @@ espOverlay.Parent = gui
 
 type PlayerPartEffect = {Fill: BoxHandleAdornment, Glow: BoxHandleAdornment}
 local trackedHighlights: {[Model]: Folder} = {}
+local looseAimModels: {[Model]: boolean} = {}
 local trackedPlayerParts: {[Model]: {[BasePart]: PlayerPartEffect}} = {}
 local trackedBoxes: {[Model]: Frame} = {}
 local trackedSkeletons: {[Model]: Frame} = {}
@@ -766,6 +767,7 @@ local function scanCharacters()
 		for model in pairs(trackedHighlights) do table.insert(staleModels, model) end
 		for _, model in ipairs(staleModels) do destroyTracked(model) end
 		cleanedCharactersFolder = nil
+		looseAimModels = {}
 		return
 	end
 	if cleanedCharactersFolder ~= charactersFolder then
@@ -777,12 +779,19 @@ local function scanCharacters()
 		cleanedCharactersFolder = charactersFolder
 	end
 	local currentModels: {[Model]: boolean} = {}
+	local currentAimModels: {[Model]: boolean} = {}
 	for _, descendant in ipairs(charactersFolder:GetDescendants()) do
-		if descendant:IsA("Model") and looksLikeCharacter(descendant) then
-			currentModels[descendant] = true
-			trackModel(descendant)
+		if descendant:IsA("Model") then
+			if not isLocalPlayerModel(descendant) and (descendant:FindFirstChild("Head", true) or descendant:FindFirstChild("HumanoidRootPart", true) or descendant:FindFirstChild("Torso", true)) then
+				currentAimModels[descendant] = true
+			end
+			if looksLikeCharacter(descendant) then
+				currentModels[descendant] = true
+				trackModel(descendant)
+			end
 		end
 	end
+	looseAimModels = currentAimModels
 	local staleModels = {}
 	for model in pairs(trackedHighlights) do
 		if not currentModels[model] then table.insert(staleModels, model) end
@@ -1309,6 +1318,7 @@ local savedAimCameraType = Enum.CameraType.Custom
 local savedAimMouseBehavior = Enum.MouseBehavior.Default
 local savedAimCameraOffset: Vector3? = nil
 local lockedAimModel: Model? = nil
+local lockedAimPart: BasePart? = nil
 local aimLockStartedAt = 0
 local aimMouseTravel = 0
 
@@ -1361,6 +1371,23 @@ aimCircleCorner.CornerRadius = UDim.new(1, 0)
 local aimCircleStroke = stroke(aimCircle, 0.1, 2)
 aimCircleStroke.Color = aimColor
 
+local aimStatusLabel = Instance.new("TextLabel")
+aimStatusLabel.Name = "AimStatus"
+aimStatusLabel.AnchorPoint = Vector2.new(0.5, 0)
+aimStatusLabel.Position = UDim2.new(0.5, 0, 0.5, aimRadius + 10)
+aimStatusLabel.Size = UDim2.fromOffset(340, 26)
+aimStatusLabel.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
+aimStatusLabel.BackgroundTransparency = 0.35
+aimStatusLabel.BorderSizePixel = 0
+aimStatusLabel.Text = "AIM: off"
+aimStatusLabel.TextColor3 = aimColor
+aimStatusLabel.TextSize = 13
+aimStatusLabel.Font = Enum.Font.GothamSemibold
+aimStatusLabel.Visible = false
+aimStatusLabel.ZIndex = 121
+aimStatusLabel.Parent = aimOverlayRoot
+corner(aimStatusLabel, 8)
+
 local aimCard = Instance.new("Frame")
 aimCard.Name = "AimCard"
 aimCard.Size = UDim2.new(1, -10, 0, 68)
@@ -1391,6 +1418,7 @@ aimDescription.Text = "Target lock; move mouse to release"
 aimDescription.Parent = aimOpen
 local function setAimStatus(message: string)
 	if aimDescription.Text ~= message then aimDescription.Text = message end
+	if aimStatusLabel.Text ~= message then aimStatusLabel.Text = message end
 end
 
 local aimToggle = tracerToggle:Clone()
@@ -1502,6 +1530,7 @@ local function refreshAimSize()
 	local alpha = (aimRadius - 30) / 270
 	aimSizeValue.Text = tostring(aimRadius) .. " px"
 	aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
+	aimStatusLabel.Position = UDim2.new(0.5, 0, 0.5, aimRadius + 10)
 	aimSizeFill.Size = UDim2.new(alpha, 0, 1, 0)
 	aimSizeFill.BackgroundColor3 = aimColor
 	aimSizeKnob.Position = UDim2.new(alpha, 0, 0.5, 0)
@@ -1545,8 +1574,10 @@ local function setAimEnabled(shouldEnable: boolean)
 		Position = aimEnabled and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
 	}):Play()
 	aimCircle.Visible = aimEnabled
+	aimStatusLabel.Visible = aimEnabled
 	if not aimEnabled then
 		lockedAimModel = nil
+		lockedAimPart = nil
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
 	end
@@ -1683,6 +1714,7 @@ end
 local function getAimCandidates(): {[Model]: boolean}
 	local candidates: {[Model]: boolean} = {}
 	for model in pairs(trackedHighlights) do candidates[model] = true end
+	for model in pairs(looseAimModels) do candidates[model] = true end
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
 		local character = otherPlayer.Character
 		if otherPlayer ~= player and character and character.Parent then
@@ -1843,56 +1875,65 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value + 1,
 	if savedAimCamera and savedAimCamera ~= camera then restoreAimCameraControl() end
 
 	local viewport = camera.ViewportSize
-	local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
-	local useViewport = viewport.X > 2 and viewport.Y > 2
 	local overlaySize = aimOverlayRoot.AbsoluteSize
+	local viewHeight = if overlaySize.Y > 2 then overlaySize.Y else viewport.Y
+	local focalLength = if viewHeight > 2 then viewHeight / (2 * math.tan(math.rad(camera.FieldOfView) * 0.5)) else 0
 	local aimCandidates = getAimCandidates()
 
 	local targetPart: BasePart? = nil
 	if lockedAimModel then
 		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
 		if lockedAimModel.Parent and aimCandidates[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
-			targetPart = getBodyPart(lockedAimModel, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
+			targetPart = if lockedAimPart and lockedAimPart:IsDescendantOf(lockedAimModel) then lockedAimPart else getBodyPart(lockedAimModel, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
 		else
 			lockedAimModel = nil
+			lockedAimPart = nil
 		end
 	end
 
 	if not lockedAimModel then
 		local closestDistance = aimRadius
+		local nearestDistance = math.huge
+		local candidateCount = 0
 		for model in pairs(aimCandidates) do
 			if model.Parent and not isLocalPlayerModel(model) then
 				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 				if not humanoid or humanoid.Health > 0 then
-					local part = getBodyPart(model, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
-					if part then
-						local distance: number? = nil
-						if useViewport then
-							local point, onScreen = camera:WorldToViewportPoint(part.Position)
-							if onScreen and point.Z > 0 then
-								distance = (Vector2.new(point.X, point.Y) - screenCenter).Magnitude
-							end
-						elseif overlaySize.Y > 2 then
+					for _, name in ipairs({"Head", "UpperTorso", "Torso", "HumanoidRootPart"}) do
+						local part = model:FindFirstChild(name, true)
+						if part and part:IsA("BasePart") then
+							candidateCount += 1
 							local point = camera.CFrame:PointToObjectSpace(part.Position)
-							if point.Z < -0.01 then
-								local focalLength = overlaySize.Y / (2 * math.tan(math.rad(camera.FieldOfView) * 0.5))
-								distance = Vector2.new(point.X, point.Y).Magnitude * focalLength / -point.Z
+							if point.Z < -0.01 and focalLength > 0 then
+								local distance = Vector2.new(point.X, point.Y).Magnitude * focalLength / -point.Z
+								nearestDistance = math.min(nearestDistance, distance)
+								if distance <= closestDistance then
+									closestDistance = distance
+									targetPart = part
+									lockedAimModel = model
+									lockedAimPart = part
 							end
-						end
-						if distance and distance <= closestDistance then
-							closestDistance = distance
-							targetPart = part
-							lockedAimModel = model
 						end
 					end
 				end
 			end
 		end
+		end
+		if not targetPart then
+			if candidateCount == 0 then
+				setAimStatus("AIM: no character parts found")
+			elseif nearestDistance < math.huge then
+				setAimStatus("AIM: nearest " .. math.round(nearestDistance) .. "px / circle " .. aimRadius .. "px")
+			else
+				setAimStatus("AIM: targets are behind camera")
+			end
+		end
 	end
 
 	if not targetPart or not targetPart.Parent then
-		setAimStatus(if next(aimCandidates) then "AIM: no target in circle" else "AIM: no characters found")
+		if not next(aimCandidates) then setAimStatus("AIM: no characters found") end
 		lockedAimModel = nil
+		lockedAimPart = nil
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
 		return
@@ -2197,7 +2238,9 @@ end)
 local function disableAutoLocalization(instance: Instance)
 	if instance:IsA("GuiObject") then instance.AutoLocalize = false end
 end
-for _, descendant in ipairs(gui:GetDescendants()) do disableAutoLocalization(descendant) end
+task.defer(function()
+	for _, descendant in ipairs(gui:GetDescendants()) do disableAutoLocalization(descendant) end
+end)
 gui.DescendantAdded:Connect(disableAutoLocalization)
 
 gui.Destroying:Connect(function()
