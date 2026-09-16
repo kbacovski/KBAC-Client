@@ -1314,11 +1314,234 @@ tracerOpen.Activated:Connect(function()
 	if not tracerExpanded then task.delay(0.25, function() if not tracerExpanded then tracerSettings.Visible = false end end) end
 end)
 
+-- Aim assist uses the same tracked BloxStrike characters as ESP.
+local aimEnabled = false
+local aimExpanded = false
+local aimRadius = 120
+local aimColor = Color3.fromRGB(255, 70, 82)
+local savedAimHumanoid: Humanoid? = nil
+local savedAutoRotate: boolean? = nil
+
+local function restoreAimAutoRotate()
+	if savedAimHumanoid and savedAimHumanoid.Parent and savedAutoRotate ~= nil then
+		savedAimHumanoid.AutoRotate = savedAutoRotate
+	end
+	savedAimHumanoid = nil
+	savedAutoRotate = nil
+end
+
+local aimCircle = Instance.new("Frame")
+aimCircle.Name = "AimFOVCircle"
+aimCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
+aimCircle.BackgroundTransparency = 1
+aimCircle.BorderSizePixel = 0
+aimCircle.Visible = false
+aimCircle.ZIndex = 120
+aimCircle.Parent = gui
+local aimCircleCorner = corner(aimCircle, 0)
+aimCircleCorner.CornerRadius = UDim.new(1, 0)
+local aimCircleStroke = stroke(aimCircle, 0.1, 2)
+aimCircleStroke.Color = aimColor
+
+local aimCard = Instance.new("Frame")
+aimCard.Name = "AimCard"
+aimCard.Size = UDim2.new(1, -10, 0, 68)
+aimCard.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
+aimCard.BackgroundTransparency = 0.5
+aimCard.BorderSizePixel = 0
+aimCard.ClipsDescendants = true
+aimCard.LayoutOrder = 2
+aimCard.Visible = false
+aimCard.ZIndex = 17
+aimCard.Parent = bloxModules
+corner(aimCard, 18)
+stroke(aimCard, 0.62, 1)
+
+local aimOpen = Instance.new("TextButton")
+aimOpen.Size = UDim2.new(1, -78, 0, 68)
+aimOpen.BackgroundTransparency = 1
+aimOpen.Text = ""
+aimOpen.AutoButtonColor = false
+aimOpen.ZIndex = 18
+aimOpen.Parent = aimCard
+
+local aimTitle = tracerTitle:Clone()
+aimTitle.Text = "AIM"
+aimTitle.Parent = aimOpen
+local aimDescription = tracerDescription:Clone()
+aimDescription.Text = "Camera + character aim inside the circle"
+aimDescription.Parent = aimOpen
+
+local aimToggle = tracerToggle:Clone()
+aimToggle.Name = "AimToggle"
+aimToggle.Parent = aimCard
+local aimKnob = aimToggle:FindFirstChildWhichIsA("Frame") :: Frame
+
+local aimSettings = Instance.new("Frame")
+aimSettings.Position = UDim2.fromOffset(12, 76)
+aimSettings.Size = UDim2.new(1, -24, 0, 118)
+aimSettings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
+aimSettings.BackgroundTransparency = 0.54
+aimSettings.BorderSizePixel = 0
+aimSettings.Visible = false
+aimSettings.ZIndex = 18
+aimSettings.Parent = aimCard
+corner(aimSettings, 15)
+stroke(aimSettings, 0.58)
+
+local aimColorLabel = tracerModeLabel:Clone()
+aimColorLabel.Position = UDim2.fromOffset(12, 9)
+aimColorLabel.Text = "CIRCLE COLOR"
+aimColorLabel.Parent = aimSettings
+
+local aimPalette = Instance.new("Frame")
+aimPalette.Position = UDim2.fromOffset(12, 29)
+aimPalette.Size = UDim2.new(1, -24, 0, 26)
+aimPalette.BackgroundTransparency = 1
+aimPalette.ZIndex = 20
+aimPalette.Parent = aimSettings
+local aimPaletteLayout = Instance.new("UIListLayout")
+aimPaletteLayout.FillDirection = Enum.FillDirection.Horizontal
+aimPaletteLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+aimPaletteLayout.Padding = UDim.new(0, 8)
+aimPaletteLayout.Parent = aimPalette
+local aimSizeFill = Instance.new("Frame")
+local aimSwatches: {{Color: Color3, Outline: UIStroke}} = {}
+for _, color in ipairs({
+	Color3.fromRGB(255, 70, 82), Color3.fromRGB(255, 170, 45),
+	Color3.fromRGB(255, 235, 70), Color3.fromRGB(70, 235, 135),
+	Color3.fromRGB(70, 190, 255), Color3.fromRGB(150, 105, 255),
+	Color3.fromRGB(255, 105, 220), Color3.fromRGB(255, 255, 255),
+}) do
+	local dot = Instance.new("TextButton")
+	dot.Size = UDim2.fromOffset(24, 24)
+	dot.BackgroundColor3 = color
+	dot.BorderSizePixel = 0
+	dot.Text = ""
+	dot.AutoButtonColor = false
+	dot.ZIndex = 21
+	dot.Parent = aimPalette
+	corner(dot, 12)
+	local outline = stroke(dot, 0.65)
+	table.insert(aimSwatches, {Color = color, Outline = outline})
+	dot.Activated:Connect(function()
+		aimColor = color
+		aimCircleStroke.Color = color
+		aimSizeFill.BackgroundColor3 = color
+		for _, swatch in ipairs(aimSwatches) do
+			swatch.Outline.Transparency = if swatch.Color == color then 0.05 else 0.65
+		end
+	end)
+end
+aimSwatches[1].Outline.Transparency = 0.05
+
+local aimSizeLabel = aimColorLabel:Clone()
+aimSizeLabel.Position = UDim2.fromOffset(12, 63)
+aimSizeLabel.Text = "CIRCLE RADIUS"
+aimSizeLabel.Parent = aimSettings
+local aimSizeValue = aimSizeLabel:Clone()
+aimSizeValue.Position = UDim2.new(1, -66, 0, 63)
+aimSizeValue.Size = UDim2.fromOffset(54, 18)
+aimSizeValue.TextXAlignment = Enum.TextXAlignment.Right
+aimSizeValue.Parent = aimSettings
+
+local aimSizeTrack = Instance.new("Frame")
+aimSizeTrack.Position = UDim2.fromOffset(14, 99)
+aimSizeTrack.Size = UDim2.new(1, -28, 0, 6)
+aimSizeTrack.BackgroundColor3 = Color3.fromRGB(105, 114, 130)
+aimSizeTrack.BackgroundTransparency = 0.35
+aimSizeTrack.BorderSizePixel = 0
+aimSizeTrack.Active = true
+aimSizeTrack.ZIndex = 20
+aimSizeTrack.Parent = aimSettings
+corner(aimSizeTrack, 3)
+aimSizeFill.BackgroundColor3 = aimColor
+aimSizeFill.BorderSizePixel = 0
+aimSizeFill.ZIndex = 21
+aimSizeFill.Parent = aimSizeTrack
+corner(aimSizeFill, 3)
+local aimSizeKnob = Instance.new("Frame")
+aimSizeKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+aimSizeKnob.Size = UDim2.fromOffset(18, 18)
+aimSizeKnob.BackgroundColor3 = COLORS.white
+aimSizeKnob.BorderSizePixel = 0
+aimSizeKnob.ZIndex = 22
+aimSizeKnob.Parent = aimSizeTrack
+corner(aimSizeKnob, 9)
+local aimSizeHit = Instance.new("Frame")
+aimSizeHit.AnchorPoint = Vector2.new(0, 0.5)
+aimSizeHit.Position = UDim2.new(0, 0, 0.5, 0)
+aimSizeHit.Size = UDim2.new(1, 0, 0, 30)
+aimSizeHit.BackgroundTransparency = 1
+aimSizeHit.Active = true
+aimSizeHit.ZIndex = 23
+aimSizeHit.Parent = aimSizeTrack
+
+local function refreshAimSize()
+	local alpha = (aimRadius - 30) / 270
+	aimSizeValue.Text = tostring(aimRadius) .. " px"
+	aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
+	aimSizeFill.Size = UDim2.new(alpha, 0, 1, 0)
+	aimSizeFill.BackgroundColor3 = aimColor
+	aimSizeKnob.Position = UDim2.new(alpha, 0, 0.5, 0)
+end
+
+local draggingAimSize = false
+local aimDragInput: InputObject? = nil
+local function setAimSizeFromX(x: number)
+	local alpha = math.clamp((x - aimSizeTrack.AbsolutePosition.X) / math.max(aimSizeTrack.AbsoluteSize.X, 1), 0, 1)
+	aimRadius = math.round(30 + alpha * 270)
+	refreshAimSize()
+end
+aimSizeHit.InputBegan:Connect(function(input: InputObject)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		draggingAimSize = true
+		aimDragInput = input
+		setAimSizeFromX(input.Position.X)
+	end
+end)
+UserInputService.InputChanged:Connect(function(input: InputObject)
+	if draggingAimSize and (input.UserInputType == Enum.UserInputType.MouseMovement or input == aimDragInput) then
+		setAimSizeFromX(input.Position.X)
+	end
+end)
+UserInputService.InputEnded:Connect(function(input: InputObject)
+	if input == aimDragInput then
+		draggingAimSize = false
+		aimDragInput = nil
+	end
+end)
+refreshAimSize()
+
+aimToggle.Activated:Connect(function()
+	aimEnabled = not aimEnabled
+	TweenService:Create(aimToggle, quickTween, {
+		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
+		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
+	}):Play()
+	TweenService:Create(aimKnob, quickTween, {
+		Position = aimEnabled and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
+	}):Play()
+	aimCircle.Visible = aimEnabled
+	if not aimEnabled then restoreAimAutoRotate() end
+end)
+
+aimOpen.Activated:Connect(function()
+	aimExpanded = not aimExpanded
+	aimSettings.Visible = true
+	TweenService:Create(aimCard, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+		Size = UDim2.new(1, -10, 0, aimExpanded and 206 or 68),
+	}):Play()
+	if not aimExpanded then task.delay(0.25, function() if not aimExpanded then aimSettings.Visible = false end end) end
+end)
+
 local function switchBloxCategory(name: string)
 	selectedBloxCategory = name
 	card.Visible = name == "Visuals"
 	tracerCard.Visible = name == "Visuals"
-	combatEmpty.Visible = name == "Combat"
+	aimCard.Visible = name == "Combat"
+	combatEmpty.Visible = false
 	otherEmpty.Visible = name == "Other"
 	for categoryName, record in pairs(categoryButtons) do
 		local active = categoryName == name
@@ -1521,6 +1744,85 @@ local function hideTracerVisuals()
 	for _, line in pairs(tracerLines) do line.Visible = false end
 	for _, arrow in pairs(tracerArrows) do arrow.Visible = false end
 end
+
+local function getLocalAimRoot(): (BasePart?, Humanoid?)
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart", true) else nil
+	if root and root:IsA("BasePart") then
+		return root, character:FindFirstChildWhichIsA("Humanoid", true)
+	end
+	if charactersFolder then
+		for _, descendant in ipairs(charactersFolder:GetDescendants()) do
+			if descendant:IsA("Model") and isLocalPlayerModel(descendant) then
+				local localRoot = descendant:FindFirstChild("HumanoidRootPart", true)
+				if localRoot and localRoot:IsA("BasePart") then
+					return localRoot, descendant:FindFirstChildWhichIsA("Humanoid", true)
+				end
+			end
+		end
+	end
+	return nil, nil
+end
+
+RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 1, function()
+	if not aimEnabled then return end
+	local camera = workspace.CurrentCamera
+	if not camera then
+		restoreAimAutoRotate()
+		return
+	end
+	local viewport = camera.ViewportSize
+	local topLeftInset = GuiService:GetGuiInset()
+	local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+	aimCircle.Position = UDim2.fromOffset(screenCenter.X - topLeftInset.X, screenCenter.Y - topLeftInset.Y)
+
+	local closestPart: BasePart? = nil
+	local closestDistance = aimRadius
+	for model in pairs(trackedHighlights) do
+		if model.Parent and not isLocalPlayerModel(model) then
+			local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
+			if not humanoid or humanoid.Health > 0 then
+				local part = getBodyPart(model, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
+				if part then
+					local point, onScreen = camera:WorldToViewportPoint(part.Position)
+					if onScreen and point.Z > 0 then
+						local distance = (Vector2.new(point.X, point.Y) - screenCenter).Magnitude
+						if distance <= closestDistance then
+							closestDistance = distance
+							closestPart = part
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if not closestPart or not closestPart.Parent then
+		restoreAimAutoRotate()
+		return
+	end
+	local aimPoint = closestPart.Position
+	local cameraPosition = camera.CFrame.Position
+	if (aimPoint - cameraPosition).Magnitude > 0.01 then
+		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
+	end
+
+	local root, humanoid = getLocalAimRoot()
+	if humanoid ~= savedAimHumanoid then
+		restoreAimAutoRotate()
+		if humanoid then
+			savedAimHumanoid = humanoid
+			savedAutoRotate = humanoid.AutoRotate
+			humanoid.AutoRotate = false
+		end
+	end
+	if root and root.Parent then
+		local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
+		if (horizontalTarget - root.Position).Magnitude > 0.01 then
+			root.CFrame = CFrame.lookAt(root.Position, horizontalTarget)
+		end
+	end
+end)
 
 RunService.RenderStepped:Connect(function()
 	if not espEnabled and not tracerEnabled then return end
@@ -1755,6 +2057,8 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
+	RunService:UnbindFromRenderStep("KBACClientAim")
+	restoreAimAutoRotate()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
 	if effectsFolder.Parent then effectsFolder:Destroy() end
 	if blur.Parent then blur:Destroy() end
