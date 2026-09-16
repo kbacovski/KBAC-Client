@@ -15,6 +15,9 @@ local playerGui = player:WaitForChild("PlayerGui")
 local oldGui = playerGui:FindFirstChild("KBACClient")
 if oldGui then oldGui:Destroy() end
 
+local oldAimOverlay = playerGui:FindFirstChild("KBACAimOverlay")
+if oldAimOverlay then oldAimOverlay:Destroy() end
+
 local oldBlur = Lighting:FindFirstChild("KBACClientBlur")
 if oldBlur then oldBlur:Destroy() end
 
@@ -1327,6 +1330,15 @@ local function restoreAimCameraControl()
 	aimMouseTravel = 0
 end
 
+local aimOverlayGui = Instance.new("ScreenGui")
+aimOverlayGui.Name = "KBACAimOverlay"
+aimOverlayGui.ResetOnSpawn = false
+aimOverlayGui.IgnoreGuiInset = true
+aimOverlayGui.ScreenInsets = Enum.ScreenInsets.None
+aimOverlayGui.DisplayOrder = gui.DisplayOrder + 1
+aimOverlayGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+aimOverlayGui.Parent = playerGui
+
 local aimCircle = Instance.new("Frame")
 aimCircle.Name = "AimFOVCircle"
 aimCircle.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1336,19 +1348,11 @@ aimCircle.BackgroundTransparency = 1
 aimCircle.BorderSizePixel = 0
 aimCircle.Visible = false
 aimCircle.ZIndex = 120
-aimCircle.Parent = gui
+aimCircle.Parent = aimOverlayGui
 local aimCircleCorner = corner(aimCircle, 0)
 aimCircleCorner.CornerRadius = UDim.new(1, 0)
 local aimCircleStroke = stroke(aimCircle, 0.1, 2)
 aimCircleStroke.Color = aimColor
-
-local function positionAimCircle()
-	local camera = workspace.CurrentCamera
-	if not camera then return end
-	local viewport = camera.ViewportSize
-	local topLeftInset = GuiService:GetGuiInset()
-	aimCircle.Position = UDim2.fromOffset(viewport.X * 0.5 - topLeftInset.X, viewport.Y * 0.5 - topLeftInset.Y)
-end
 
 local aimCard = Instance.new("Frame")
 aimCard.Name = "AimCard"
@@ -1522,7 +1526,6 @@ refreshAimSize()
 
 local function setAimEnabled(shouldEnable: boolean)
 	aimEnabled = shouldEnable
-	if aimEnabled then positionAimCircle() end
 	TweenService:Create(aimToggle, quickTween, {
 		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
 		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
@@ -1797,7 +1800,6 @@ end
 
 RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 1, function()
 	if not aimEnabled then return end
-	positionAimCircle()
 
 	local camera = workspace.CurrentCamera
 	if not camera then
@@ -1810,6 +1812,8 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 
 	local viewport = camera.ViewportSize
 	local screenCenter = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+	local useViewport = viewport.X > 2 and viewport.Y > 2
+	local overlaySize = aimOverlayGui.AbsoluteSize
 
 	local targetPart: BasePart? = nil
 	if lockedAimModel then
@@ -1829,14 +1833,23 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Camera.Value + 
 				if not humanoid or humanoid.Health > 0 then
 					local part = getBodyPart(model, "Head", "UpperTorso", "Torso", "HumanoidRootPart")
 					if part then
-						local point, onScreen = camera:WorldToViewportPoint(part.Position)
-						if onScreen and point.Z > 0 then
-							local distance = (Vector2.new(point.X, point.Y) - screenCenter).Magnitude
-							if distance <= closestDistance then
-								closestDistance = distance
-								targetPart = part
-								lockedAimModel = model
+						local distance: number? = nil
+						if useViewport then
+							local point, onScreen = camera:WorldToViewportPoint(part.Position)
+							if onScreen and point.Z > 0 then
+								distance = (Vector2.new(point.X, point.Y) - screenCenter).Magnitude
 							end
+						elseif overlaySize.Y > 2 then
+							local point = camera.CFrame:PointToObjectSpace(part.Position)
+							if point.Z < -0.01 then
+								local focalLength = overlaySize.Y / (2 * math.tan(math.rad(camera.FieldOfView) * 0.5))
+								distance = Vector2.new(point.X, point.Y).Magnitude * focalLength / -point.Z
+							end
+						end
+						if distance and distance <= closestDistance then
+							closestDistance = distance
+							targetPart = part
+							lockedAimModel = model
 						end
 					end
 				end
@@ -2154,6 +2167,7 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
 	RunService:UnbindFromRenderStep("KBACClientAim")
+	if aimOverlayGui.Parent then aimOverlayGui:Destroy() end
 	restoreAimCameraControl()
 	restoreAimAutoRotate()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
