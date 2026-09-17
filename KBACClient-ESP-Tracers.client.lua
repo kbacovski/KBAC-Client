@@ -170,7 +170,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "ui-language-snow-2")
+gui:SetAttribute("ClientBuild", "ui-snow-bounds-3")
 gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -311,6 +311,33 @@ local function setupMenuSnow()
 	layer.ZIndex = 12
 	layer.Parent = panel
 	local flakes = {}
+	local random = Random.new()
+	local columns, rows = 6, 4
+	-- Work in menu coordinates so UIScale scales particles and bounds together.
+	local width, height = panel.Size.X.Offset, panel.Size.Y.Offset
+	local cornerRadius = 31
+	local elapsed = 0
+	local function startX(column: number): number
+		local margin = cornerRadius + 6
+		return (margin + (width - margin * 2) * (column + random:NextNumber(0.08, 0.92)) / columns) / width
+	end
+	local function draw(flake)
+		local drift = math.sin(elapsed * 0.65 + flake.Phase) * 0.018
+		local x, y = (flake.X + drift) * width, flake.Y * height
+		-- Distance to the rounded panel boundary. Never rely on clipping rotated GUI objects.
+		local qx = math.abs(x - width * 0.5) - (width * 0.5 - cornerRadius)
+		local qy = math.abs(y - height * 0.5) - (height * 0.5 - cornerRadius)
+		local outside = math.sqrt(math.max(qx, 0)^2 + math.max(qy, 0)^2)
+		local clearance = cornerRadius - outside - math.min(math.max(qx, qy), 0) - flake.Radius
+		flake.Object.Visible = flake.Delay <= 0 and clearance > 0
+		if not flake.Object.Visible then return end
+		flake.Object.Position = UDim2.fromScale(x / width, flake.Y)
+		flake.Object.Rotation = (elapsed * flake.Spin + flake.Phase * 20) % 360
+		local opacity = math.clamp(clearance / 12, 0, 1)
+		for _, item in ipairs(flake.Lines) do
+			item.BackgroundTransparency = 1 - (1 - flake.Alpha) * opacity
+		end
+	end
 	local function line(parent: Instance, y: number, length: number, rotation: number, alpha: number)
 		local item = Instance.new("Frame")
 		item.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -326,43 +353,60 @@ local function setupMenuSnow()
 		item.Parent = parent
 		return item
 	end
-	for index = 1, 24 do
+	for index = 1, columns * rows do
 		local size = 7 + (index % 6) * 2
 		local flake = Instance.new("Frame")
 		flake.Name = "Snowflake"
 		flake.AnchorPoint = Vector2.new(0.5, 0.5)
 		flake.Size = UDim2.fromOffset(size, size)
 		flake.BackgroundTransparency = 1
+		flake.Visible = false
 		flake.Active = false
 		flake.Selectable = false
 		flake.ZIndex = 12
 		flake.Parent = layer
+		local lines = {}
 		local alpha = 0.44 + (index % 4) * 0.09
 		for axis = 0, 2 do
 			local stem = line(flake, 0.5, size, axis * 60, alpha)
+			table.insert(lines, stem)
 			if size >= 13 then
 				for _, y in ipairs({0.22, 0.78}) do
-					line(stem, y, size * 0.32, -45, alpha)
-					line(stem, y, size * 0.32, 45, alpha)
+					table.insert(lines, line(stem, y, size * 0.32, -45, alpha))
+					table.insert(lines, line(stem, y, size * 0.32, 45, alpha))
 				end
 			end
 		end
-		local x, y = (index * 0.61803398875) % 1, (index * 0.38196601125) % 1
-		flake.Position = UDim2.fromScale(x, y)
-		table.insert(flakes, {Object = flake, X = x, Y = y, Phase = index * 2.4,
-			Speed = 0.035 + (index % 7) * 0.006, Spin = (index % 2 == 0 and 1 or -1) * (5 + index % 5)})
+		-- Independent jitter in each grid cell fills the whole background immediately.
+		local column, row = (index - 1) % columns, math.floor((index - 1) / columns)
+		local margin = cornerRadius + 6
+		local y = (margin + (height - margin * 2) * (row + random:NextNumber(0.08, 0.92)) / rows) / height
+		local flakeState = {Object = flake, Lines = lines, Alpha = alpha,
+			X = startX(column), Y = y, Column = column, Radius = size * 0.75 + 2,
+			Phase = random:NextNumber(0, math.pi * 2), Speed = random:NextNumber(0.035, 0.075),
+			Spin = random:NextNumber(5, 10) * (index % 2 == 0 and 1 or -1), Delay = 0}
+		table.insert(flakes, flakeState)
+		draw(flakeState)
 	end
-	local elapsed = 0
 	local connection = RunService.RenderStepped:Connect(function(deltaTime: number)
 		if not panel.Visible then return end
 		local step = math.clamp(deltaTime, 0, 0.05)
 		elapsed += step
 		for _, flake in ipairs(flakes) do
-			flake.Y += flake.Speed * step
-			if flake.Y > 1.05 then flake.Y -= 1.1 end
-			local drift = math.sin(elapsed * 0.65 + flake.Phase) * 0.025
-			flake.Object.Position = UDim2.fromScale(flake.X + drift, flake.Y)
-			flake.Object.Rotation = (elapsed * flake.Spin + flake.Phase * 20) % 360
+			if flake.Delay > 0 then
+				flake.Delay -= step
+				if flake.Delay <= 0 then
+					flake.X = startX(flake.Column)
+					flake.Y = 0
+					flake.Phase = random:NextNumber(0, math.pi * 2)
+				end
+			else
+				flake.Y += flake.Speed * step
+				if flake.Y * height >= height - flake.Radius then
+					flake.Delay = random:NextNumber(0.15, 0.7)
+				end
+			end
+			draw(flake)
 		end
 	end)
 	gui.Destroying:Connect(function()
