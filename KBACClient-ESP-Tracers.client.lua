@@ -81,7 +81,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "rivals-1")
+gui:SetAttribute("ClientBuild", "rivals-2")
 gui:SetAttribute("AimStatus", "Временно недоступен")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -2130,9 +2130,11 @@ local function setupRivalsPage()
 		Radius = 120, AimColor = Color3.fromRGB(150, 105, 255),
 		ESPColor = Color3.fromRGB(255, 70, 82), FillTransparency = 0.6,
 		TracerColor = Color3.fromRGB(70, 190, 255), Thickness = 2,
-		EnemiesOnly = true, TurnBody = true,
+		EnemiesOnly = true, TurnBody = true, TargetMode = "Circle", ShowAimButton = false, IgnoreWalls = false,
 	}
 	local config: any = rivals
+	local cards = {}
+	local lockedTarget: {Owner: Player, Model: Model}? = nil
 	local connections: {RBXScriptConnection} = {}
 	local stopped = false
 	local visuals: {[Player]: {Model: Model, Highlight: Highlight, Line: Frame}} = {}
@@ -2211,6 +2213,7 @@ local function setupRivalsPage()
 	end
 
 	local function unobstructed(camera: Camera, model: Model, head: BasePart): boolean
+		if rivals.IgnoreWalls then return true end
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
 		local excluded: {Instance} = {effectsFolder, camera}
@@ -2221,17 +2224,43 @@ local function setupRivalsPage()
 	end
 
 	local function findTarget(camera: Camera, currentPlayers: {Player}): BasePart?
+		-- Circle and Lock keep the acquired player rather than switching to
+		-- whichever head happens to be closest to the crosshair this frame.
+		if lockedTarget and rivals.TargetMode ~= "Nearest" then
+			local model, head = characterParts(lockedTarget.Owner)
+			if table.find(currentPlayers, lockedTarget.Owner) and model == lockedTarget.Model and head and isEnemy(lockedTarget.Owner) then
+				if rivals.TargetMode == "Lock" then
+					-- Remember the same target behind cover, but only move the
+					-- camera through cover when IgnoreWalls is explicitly enabled.
+					return if unobstructed(camera, model, head) then head else nil
+				end
+				if screenDistance(camera, head.Position) and unobstructed(camera, model, head) then return head end
+			end
+			lockedTarget = nil
+		end
 		local best: BasePart? = nil
+		local bestOwner: Player? = nil
+		local bestModel: Model? = nil
 		local bestDistance = math.huge
+		local localCharacter = player.Character
+		local localRoot = if localCharacter then localCharacter:FindFirstChild("HumanoidRootPart") else nil
+		local origin = if localRoot and localRoot:IsA("BasePart") then localRoot.Position else camera.CFrame.Position
 		for _, other in ipairs(currentPlayers) do
-			local model, head = characterParts(other)
+			local model, head, root = characterParts(other)
 			if model and head and isEnemy(other) then
-				local distance = screenDistance(camera, head.Position)
+				local distance: number? = nil
+				if rivals.TargetMode == "Nearest" then
+					local point, onScreen = camera:WorldToViewportPoint(head.Position)
+					if onScreen and point.Z > 0 then distance = ((root or head).Position - origin).Magnitude end
+				else
+					distance = screenDistance(camera, head.Position)
+				end
 				if distance and distance < bestDistance and unobstructed(camera, model, head) then
-					best, bestDistance = head, distance
+					best, bestDistance, bestOwner, bestModel = head, distance, other, model
 				end
 			end
 		end
+		lockedTarget = if bestOwner and bestModel then {Owner = bestOwner, Model = bestModel} else nil
 		return best
 	end
 	-- RIVALS TARGET ADAPTER END
@@ -2272,20 +2301,85 @@ local function setupRivalsPage()
 		return visual
 	end
 
+	local quickButton = openButton:Clone()
+	quickButton.Name = "RivalsAimQuickToggle"
+	quickButton.Text = "AIM"
+	quickButton.TextSize = 14
+	quickButton.Visible = false
+	quickButton.Parent = gui
+	local quickOutline = quickButton:FindFirstChildWhichIsA("UIStroke")
+	local quickMoved = false
+	local quickDragging = false
+	local quickDragInput: InputObject? = nil
+	local quickDragStart = Vector2.new(0, 0)
+	local quickPositionStart = Vector2.new(0, 0)
+	local quickDragDistance = 0
+	local function placeQuickButton()
+		local camera = workspace.CurrentCamera
+		if not camera then return end
+		local viewport = camera.ViewportSize
+		local side = if viewport.X < 500 then 52 else 58
+		quickButton.Size = UDim2.fromOffset(side, side)
+		local x, y = quickButton.Position.X.Offset, quickButton.Position.Y.Offset
+		if not quickMoved then
+			x = openButton.Position.X.Offset + side + 10
+			y = openButton.Position.Y.Offset
+			if x + side > viewport.X - 6 then x = openButton.Position.X.Offset - side - 10 end
+		end
+		quickButton.Position = UDim2.fromOffset(math.clamp(x, 6, math.max(6, viewport.X - side - 6)),
+			math.clamp(y, 6, math.max(6, viewport.Y - side - 6)))
+	end
+	quickButton.InputBegan:Connect(function(input: InputObject)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		quickDragging = true
+		quickDragInput = input
+		quickDragDistance = 0
+		quickDragStart = Vector2.new(input.Position.X, input.Position.Y)
+		quickPositionStart = Vector2.new(quickButton.Position.X.Offset, quickButton.Position.Y.Offset)
+	end)
+		table.insert(connections, UserInputService.InputChanged:Connect(function(input: InputObject)
+		if not quickDragging then return end
+		local mouseDrag = quickDragInput and quickDragInput.UserInputType == Enum.UserInputType.MouseButton1
+		if not ((mouseDrag and input.UserInputType == Enum.UserInputType.MouseMovement) or input == quickDragInput) then return end
+		local delta = Vector2.new(input.Position.X, input.Position.Y) - quickDragStart
+		quickDragDistance = delta.Magnitude
+		if quickDragDistance <= 6 then return end
+		quickMoved = true
+		quickButton.Position = UDim2.fromOffset(quickPositionStart.X + delta.X, quickPositionStart.Y + delta.Y)
+		placeQuickButton()
+	end))
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input == quickDragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			quickDragging = false
+			quickDragInput = nil
+		end
+	end))
+
 	local function refreshEnabled()
 		gui:SetAttribute("RivalsAimEnabled", rivals.Aim)
 		gui:SetAttribute("RivalsESPEnabled", rivals.ESP)
 		gui:SetAttribute("RivalsTracersEnabled", rivals.Tracers)
-		circle.Visible = rivals.Aim
-		if not rivals.Aim then releaseBody() end
+		gui:SetAttribute("RivalsIgnoreWalls", rivals.IgnoreWalls)
+		circle.Visible = rivals.Aim and rivals.TargetMode ~= "Nearest"
+		quickButton.Visible = rivals.ShowAimButton
+		quickButton.TextColor3 = if rivals.Aim then Color3.fromRGB(70, 235, 135) else COLORS.white
+		if quickOutline then quickOutline.Color = quickButton.TextColor3 end
+		placeQuickButton()
+		for _, entry in ipairs(cards) do entry.RefreshToggle() end
+		if not rivals.Aim then lockedTarget = nil releaseBody() end
 		for _, visual in pairs(visuals) do
 			visual.Highlight.Enabled = rivals.ESP
 			if not rivals.Tracers then visual.Line.Visible = false end
 		end
 	end
 
+	quickButton.Activated:Connect(function()
+		if quickDragDistance > 6 then return end
+		rivals.Aim = not rivals.Aim
+		refreshEnabled()
+	end)
+
 	-- Shared card builder keeps all three outlines, switches and palettes consistent.
-	local cards = {}
 	local function label(parent: Instance, text: string, y: number): TextLabel
 		local item = Instance.new("TextLabel")
 		item.Position = UDim2.fromOffset(12, y)
@@ -2301,7 +2395,7 @@ local function setupRivalsPage()
 		return item
 	end
 
-	local function makeCard(key: string, titleText: string, descriptionText: string, order: number, height: number)
+	local function makeCard(key: string, titleText: string, descriptionText: string, category: string, order: number, height: number)
 		local card = Instance.new("Frame")
 		card.Name = "Rivals" .. key .. "Card"
 		card.Size = UDim2.new(1, -10, 0, 68)
@@ -2366,7 +2460,7 @@ local function setupRivalsPage()
 		settings.Parent = card
 		corner(settings, 15)
 		stroke(settings, 0.58)
-		local record = {Card = card, Settings = settings, Height = height, Expanded = false}
+		local record = {Card = card, Settings = settings, Height = height, Expanded = false, Category = category}
 		table.insert(cards, record)
 		open.Activated:Connect(function()
 			local expand = not record.Expanded
@@ -2376,16 +2470,18 @@ local function setupRivalsPage()
 				entry.Card.Size = UDim2.new(1, -10, 0, if entry.Expanded then entry.Height + 88 else 68)
 			end
 			-- Bring the opened card header into view, including on phones.
-			modules.CanvasPosition = Vector2.new(0, (order - 1) * 76)
+			modules.CanvasPosition = Vector2.new(0, math.max(0, (order - 2) * 76))
 		end)
-		toggle.Activated:Connect(function()
-			config[key] = not config[key]
+		record.RefreshToggle = function()
 			local enabled = config[key]
 			TweenService:Create(toggle, quickTween, {
 				BackgroundColor3 = if enabled then Color3.fromRGB(10, 12, 16) else Color3.fromRGB(104, 112, 127),
 				BackgroundTransparency = if enabled then 0.42 else 0.18,
 			}):Play()
 			TweenService:Create(knob, quickTween, {Position = UDim2.fromOffset(if enabled then 25 else 3, 3)}):Play()
+		end
+		toggle.Activated:Connect(function()
+			config[key] = not config[key]
 			refreshEnabled()
 		end)
 		return settings
@@ -2503,6 +2599,7 @@ local function setupRivalsPage()
 		local text = label(parent, titleText, y + 6)
 		text.Size = UDim2.new(1, -95, 0, 18)
 		local button = Instance.new("TextButton")
+		button.Name = key .. "Option"
 		button.Position = UDim2.new(1, -72, 0, y)
 		button.Size = UDim2.fromOffset(60, 30)
 		button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
@@ -2519,22 +2616,139 @@ local function setupRivalsPage()
 		button.Activated:Connect(function()
 			config[key] = not config[key]
 			if not rivals.TurnBody then releaseBody() end
+			refreshEnabled()
 			refresh()
 		end)
 		refresh()
 	end
 
-	local aimSettings = makeCard("Aim", "AIM", "В голову · работает при закрытом меню", 1, 204)
-	slider(aimSettings, 10, "Radius", "РАДИУС КРУГА", 40, 300, 5)
-	palette(aimSettings, 62, "AimColor", "ЦВЕТ КРУГА")
-	option(aimSettings, 124, "EnemiesOnly", "ТОЛЬКО ПРОТИВНИКИ")
-	option(aimSettings, 162, "TurnBody", "ПОВОРОТ ПЕРСОНАЖА")
-	local espSettings = makeCard("ESP", "ESP", "Подсветка силуэта и мягкая заливка", 2, 120)
+	local aimSettings = makeCard("Aim", "AIM", "В голову · работает при закрытом меню", "Combat", 2, 376)
+	label(aimSettings, "ВЫБОР ЦЕЛИ", 10)
+	local modeHelp = label(aimSettings, "", 68)
+	modeHelp.Size = UDim2.new(1, -24, 0, 30)
+	modeHelp.TextWrapped = true
+	modeHelp.Font = Enum.Font.GothamMedium
+	local targetModes = {
+		{Key = "Nearest", Text = "Ближайшая", Help = "Ближайшая цель на экране по расстоянию до тебя. Круг не ограничивает выбор."},
+		{Key = "Circle", Text = "В круге", Help = "Выбирает голову у центра и удерживает внутри круга. Учитывает настройку стен."},
+		{Key = "Lock", Text = "До смерти", Help = "Захват в круге, удержание до смерти. За стеной пауза, если стены не игнорируются."},
+	}
+	local modeButtons = {}
+	local function refreshMode()
+		gui:SetAttribute("RivalsAimMode", rivals.TargetMode)
+		for _, mode in ipairs(targetModes) do
+			local active = rivals.TargetMode == mode.Key
+			local entry = modeButtons[mode.Key]
+			entry.Button.BackgroundTransparency = if active then 0.3 else 0.75
+			entry.Stroke.Transparency = if active then 0.25 else 0.7
+			if active then modeHelp.Text = mode.Help end
+		end
+		refreshEnabled()
+	end
+	for index, mode in ipairs(targetModes) do
+		local button = Instance.new("TextButton")
+		button.Name = "AimMode_" .. mode.Key
+		button.Position = UDim2.new((index - 1) / 3, 12, 0, 34)
+		button.Size = UDim2.new(1 / 3, -16, 0, 28)
+		button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
+		button.BorderSizePixel = 0
+		button.Text = mode.Text
+		button.TextColor3 = COLORS.text
+		button.TextSize = 11
+		button.Font = Enum.Font.GothamSemibold
+		button.AutoButtonColor = false
+		button.ZIndex = 22
+		button.Parent = aimSettings
+		corner(button, 10)
+		modeButtons[mode.Key] = {Button = button, Stroke = stroke(button, 0.7)}
+		button.Activated:Connect(function()
+			rivals.TargetMode = mode.Key
+			lockedTarget = nil
+			releaseBody()
+			refreshMode()
+		end)
+	end
+	slider(aimSettings, 106, "Radius", "РАДИУС КРУГА", 40, 300, 5)
+	palette(aimSettings, 158, "AimColor", "ЦВЕТ КРУГА")
+	option(aimSettings, 220, "EnemiesOnly", "ТОЛЬКО ПРОТИВНИКИ")
+	option(aimSettings, 258, "IgnoreWalls", "ИГНОРИРОВАТЬ СТЕНЫ")
+	option(aimSettings, 296, "TurnBody", "ПОВОРОТ ПЕРСОНАЖА")
+	option(aimSettings, 334, "ShowAimButton", "КНОПКА AIM НА ЭКРАНЕ")
+	refreshMode()
+	local espSettings = makeCard("ESP", "ESP", "Подсветка силуэта и мягкая заливка", "Visuals", 2, 120)
 	palette(espSettings, 10, "ESPColor", "ЦВЕТ ПОДСВЕТКИ")
 	slider(espSettings, 72, "FillTransparency", "ПРОЗРАЧНОСТЬ", 0.1, 0.9, 0.1)
-	local tracerSettings = makeCard("Tracers", "TRACERS", "Линии направления к игрокам", 3, 120)
+	local tracerSettings = makeCard("Tracers", "TRACERS", "Линии направления к игрокам", "Visuals", 3, 120)
 	palette(tracerSettings, 10, "TracerColor", "ЦВЕТ ЛИНИЙ")
 	slider(tracerSettings, 72, "Thickness", "ТОЛЩИНА", 1, 6, 0.5)
+
+	local categoryBar = Instance.new("Frame")
+	categoryBar.Name = "RivalsCategoryBar"
+	categoryBar.Size = UDim2.new(1, -18, 0, 44)
+	categoryBar.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+	categoryBar.BackgroundTransparency = 0.52
+	categoryBar.BorderSizePixel = 0
+	categoryBar.LayoutOrder = 1
+	categoryBar.ZIndex = 17
+	categoryBar.Parent = modules
+	corner(categoryBar, 14)
+	stroke(categoryBar, 0.68, 1)
+	local categoryLayout = Instance.new("UIListLayout")
+	categoryLayout.FillDirection = Enum.FillDirection.Horizontal
+	categoryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	categoryLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	categoryLayout.Padding = UDim.new(0, 5)
+	categoryLayout.Parent = categoryBar
+	local categoryPadding = Instance.new("UIPadding")
+	categoryPadding.PaddingLeft = UDim.new(0, 5)
+	categoryPadding.PaddingRight = UDim.new(0, 5)
+	categoryPadding.PaddingTop = UDim.new(0, 5)
+	categoryPadding.PaddingBottom = UDim.new(0, 5)
+	categoryPadding.Parent = categoryBar
+	local otherEmpty = label(modules, "Пока нет функций", 0)
+	otherEmpty.Name = "RivalsOtherEmpty"
+	otherEmpty.Size = UDim2.new(1, -10, 0, 54)
+	otherEmpty.LayoutOrder = 2
+	otherEmpty.TextSize = 13
+	otherEmpty.TextXAlignment = Enum.TextXAlignment.Center
+	otherEmpty.Visible = false
+	local categoryButtons = {}
+	local function selectCategory(name: string)
+		gui:SetAttribute("RivalsCategory", name)
+		modules.CanvasPosition = Vector2.new(0, 0)
+		for _, entry in ipairs(cards) do
+			entry.Card.Visible = entry.Category == name
+			entry.Expanded = false
+			entry.Settings.Visible = false
+			entry.Card.Size = UDim2.new(1, -10, 0, 68)
+		end
+		otherEmpty.Visible = name == "Other"
+		for category, entry in pairs(categoryButtons) do
+			local active = category == name
+			entry.Button.BackgroundTransparency = if active then 0.38 else 1
+			entry.Button.TextColor3 = if active then COLORS.text else COLORS.muted
+			entry.Stroke.Transparency = if active then 0.38 else 1
+		end
+	end
+	for order, name in ipairs({"Combat", "Visuals", "Other"}) do
+		local button = Instance.new("TextButton")
+		button.Name = name .. "Category"
+		button.Size = UDim2.new(1 / 3, -7, 1, 0)
+		button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
+		button.BorderSizePixel = 0
+		button.Text = string.upper(name)
+		button.TextSize = 11
+		button.Font = Enum.Font.GothamSemibold
+		button.AutoButtonColor = false
+		button.LayoutOrder = order
+		button.ZIndex = 18
+		button.Parent = categoryBar
+		corner(button, 10)
+		categoryButtons[name] = {Button = button, Stroke = stroke(button, 1, 1)}
+		button.Activated:Connect(function() selectCategory(name) end)
+	end
+	selectCategory("Combat")
 
 	local function turnBody(target: Vector3)
 		local character = player.Character
@@ -2558,7 +2772,8 @@ local function setupRivalsPage()
 		if stopped then return end
 		local camera = workspace.CurrentCamera
 		if not camera then circle.Visible = false releaseBody() return end
-		circle.Visible = rivals.Aim
+		circle.Visible = rivals.Aim and rivals.TargetMode ~= "Nearest"
+		if quickButton.Visible then placeQuickButton() end
 		local currentPlayers = if rivals.Aim or rivals.ESP or rivals.Tracers then Players:GetPlayers() else {}
 		local localCharacter = player.Character
 		local canAim = rivals.Aim and not panel.Visible and UserInputService:GetFocusedTextBox() == nil
@@ -2603,8 +2818,11 @@ local function setupRivalsPage()
 		for other in pairs(visuals) do if not active[other] then destroyVisual(other) end end
 	end
 
-	table.insert(connections, Players.PlayerRemoving:Connect(destroyVisual))
-	table.insert(connections, player.CharacterRemoving:Connect(function() releaseBody() end))
+	table.insert(connections, Players.PlayerRemoving:Connect(function(other: Player)
+		if lockedTarget and lockedTarget.Owner == other then lockedTarget = nil end
+		destroyVisual(other)
+	end))
+	table.insert(connections, player.CharacterRemoving:Connect(function() lockedTarget = nil releaseBody() end))
 	gui.Destroying:Connect(function()
 		stopped = true
 		RunService:UnbindFromRenderStep(binding)
