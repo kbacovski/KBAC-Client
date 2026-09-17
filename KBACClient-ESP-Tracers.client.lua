@@ -49,6 +49,83 @@ local COLORS = {
 	glass = Color3.fromRGB(52, 61, 76),
 }
 
+-- Explicit text bindings keep live settings and numeric values intact on language changes.
+local i18n = {
+	Language = "en",
+	Bindings = setmetatable({}, {__mode = "k"}) :: {[Instance]: string},
+	OnChanged = nil :: (() -> ())?,
+	Russian = {
+		["OTHER"] = "ДРУГОЕ",
+		["COMBAT"] = "БОЙ",
+		["VISUALS"] = "ВИЗУАЛ",
+		["Functions designed for RIVALS"] = "Функции для RIVALS",
+		["Functions designed for BloxStrike"] = "Функции для BloxStrike",
+		["Interface and general settings"] = "Интерфейс и общие настройки",
+		["Shooter Control Center · RIVALS"] = "Панель управления · RIVALS",
+		["No functions added yet"] = "Пока нет функций",
+		["No combat functions added yet"] = "Боевые функции пока не добавлены",
+		["No other functions added yet"] = "Другие функции пока не добавлены",
+		["Player highlighting"] = "Подсветка игроков",
+		["ESP MODE"] = "РЕЖИМ ESP",
+		["PLAYER"] = "ИГРОК",
+		["BOX"] = "РАМКА",
+		["SKELETON"] = "СКЕЛЕТ",
+		["COLOR"] = "ЦВЕТ",
+		["TRACERS"] = "ТРЕЙСЕРЫ",
+		["Direction indicators for players"] = "Указатели направления к игрокам",
+		["MODE"] = "РЕЖИМ",
+		["CLASSIC"] = "ЛИНИИ",
+		["ARROWS"] = "СТРЕЛКИ",
+		["THICKNESS / SIZE"] = "ТОЛЩИНА / РАЗМЕР",
+		["Temporarily unavailable"] = "Временно недоступен",
+		["HITBOX"] = "ХИТБОКС",
+		["Other players' head size"] = "Размер голов других игроков",
+		["HEAD SIZE"] = "РАЗМЕР ГОЛОВЫ",
+		["ON"] = "ВКЛ",
+		["OFF"] = "ВЫКЛ",
+		["Head aim · close the menu to use"] = "В голову · работает при закрытом меню",
+		["TARGET SELECTION"] = "ВЫБОР ЦЕЛИ",
+		["Nearest"] = "Ближайшая",
+		["In circle"] = "В круге",
+		["Until death"] = "До смерти",
+		["Nearest on-screen target by distance to you. The circle does not limit selection."] = "Ближайшая цель на экране по расстоянию до тебя. Круг не ограничивает выбор.",
+		["Selects a head near the center and holds it inside the circle. Respects the wall setting."] = "Выбирает голову у центра и удерживает внутри круга. Учитывает настройку стен.",
+		["Acquires inside the circle, holds until death. Pauses behind walls unless they are ignored."] = "Захват в круге, удержание до смерти. За стеной пауза, если стены не игнорируются.",
+		["CIRCLE RADIUS"] = "РАДИУС КРУГА",
+		["CIRCLE COLOR"] = "ЦВЕТ КРУГА",
+		["ENEMIES ONLY"] = "ТОЛЬКО ПРОТИВНИКИ",
+		["IGNORE WALLS"] = "ИГНОРИРОВАТЬ СТЕНЫ",
+		["TURN CHARACTER"] = "ПОВОРОТ ПЕРСОНАЖА",
+		["SHOW AIM BUTTON"] = "КНОПКА AIM НА ЭКРАНЕ",
+		["Outline and soft player fill"] = "Подсветка силуэта и мягкая заливка",
+		["HIGHLIGHT COLOR"] = "ЦВЕТ ПОДСВЕТКИ",
+		["TRANSPARENCY"] = "ПРОЗРАЧНОСТЬ",
+		["Direction lines to players"] = "Линии направления к игрокам",
+		["LINE COLOR"] = "ЦВЕТ ЛИНИЙ",
+		["THICKNESS"] = "ТОЛЩИНА",
+		["LANGUAGE"] = "ЯЗЫК",
+		["Choose the interface language"] = "Выбери язык интерфейса",
+		["Applies to all tabs. Your settings stay the same."] = "Для всех вкладок. Твои настройки сохраняются.",
+	},
+}
+
+function i18n.Text(instance: any, english: string)
+	local russian = i18n.Russian[english]
+	i18n.Bindings[instance] = if russian then english else nil
+	instance.AutoLocalize = false
+	instance.Text = if i18n.Language == "ru" and russian then russian else english
+end
+
+function i18n.SetLanguage(language: string)
+	if language ~= "en" and language ~= "ru" then return end
+	i18n.Language = language
+	for instance, english in pairs(i18n.Bindings) do
+		(instance :: any).Text = if language == "ru" then i18n.Russian[english] else english
+	end
+	if i18n.OnChanged then i18n.OnChanged() end
+end
+-- END LOCALIZATION
+
 local function corner(parent: Instance, radius: number)
 	local item = Instance.new("UICorner")
 	item.CornerRadius = UDim.new(0, radius)
@@ -81,8 +158,8 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "rivals-2")
-gui:SetAttribute("AimStatus", "Временно недоступен")
+gui:SetAttribute("ClientBuild", "ui-languages-1")
+gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
 local blur = Instance.new("BlurEffect")
@@ -99,7 +176,7 @@ openButton.Size = UDim2.fromOffset(58, 58)
 openButton.BackgroundColor3 = Color3.fromRGB(8, 10, 14)
 openButton.BackgroundTransparency = 0.52
 openButton.BorderSizePixel = 0
-openButton.Text = "K"
+i18n.Text(openButton, "K")
 openButton.TextColor3 = COLORS.text
 openButton.TextSize = 26
 openButton.Font = Enum.Font.GothamBold
@@ -214,7 +291,7 @@ title.Name = "Title"
 title.Position = UDim2.fromOffset(28, 18)
 title.Size = UDim2.new(1, -100, 0, 31)
 title.BackgroundTransparency = 1
-title.Text = "KBAC CLIENT"
+i18n.Text(title, "KBAC CLIENT")
 title.TextColor3 = COLORS.text
 title.TextSize = 25
 title.Font = Enum.Font.GothamBold
@@ -227,7 +304,7 @@ subtitle.Name = "Subtitle"
 subtitle.Position = UDim2.fromOffset(29, 50)
 subtitle.Size = UDim2.new(1, -100, 0, 20)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "Shooter Control Center · RIVALS"
+i18n.Text(subtitle, "Shooter Control Center · RIVALS")
 subtitle.TextColor3 = COLORS.muted
 subtitle.TextSize = 13
 subtitle.Font = Enum.Font.GothamMedium
@@ -243,7 +320,7 @@ closeButton.Size = UDim2.fromOffset(38, 38)
 closeButton.BackgroundColor3 = COLORS.white
 closeButton.BackgroundTransparency = 0.73
 closeButton.BorderSizePixel = 0
-closeButton.Text = "×"
+i18n.Text(closeButton, "×")
 closeButton.TextColor3 = COLORS.text
 closeButton.TextSize = 23
 closeButton.Font = Enum.Font.GothamMedium
@@ -326,7 +403,7 @@ local function createPage(id: string, heading: string, description: string): Pag
 	pageTitle.Position = UDim2.fromOffset(24, 18)
 	pageTitle.Size = UDim2.new(1, -48, 0, 31)
 	pageTitle.BackgroundTransparency = 1
-	pageTitle.Text = heading
+	i18n.Text(pageTitle, heading)
 	pageTitle.TextColor3 = COLORS.text
 	pageTitle.TextSize = 21
 	pageTitle.Font = Enum.Font.GothamBold
@@ -338,7 +415,7 @@ local function createPage(id: string, heading: string, description: string): Pag
 	descriptionLabel.Position = UDim2.fromOffset(25, 50)
 	descriptionLabel.Size = UDim2.new(1, -50, 0, 22)
 	descriptionLabel.BackgroundTransparency = 1
-	descriptionLabel.Text = description
+	i18n.Text(descriptionLabel, description)
 	descriptionLabel.TextColor3 = COLORS.muted
 	descriptionLabel.TextSize = 13
 	descriptionLabel.Font = Enum.Font.GothamMedium
@@ -400,7 +477,7 @@ local function createPage(id: string, heading: string, description: string): Pag
 	empty.Name = "EmptyText"
 	empty.Size = UDim2.new(1, 0, 0, 48)
 	empty.BackgroundTransparency = 1
-	empty.Text = "No functions added yet"
+	i18n.Text(empty, "No functions added yet")
 	empty.TextColor3 = COLORS.muted
 	empty.TextTransparency = 0.25
 	empty.TextSize = 14
@@ -421,7 +498,7 @@ local function createTab(id: string, text: string, order: number)
 	button.BackgroundColor3 = COLORS.white
 	button.BackgroundTransparency = 1
 	button.BorderSizePixel = 0
-	button.Text = text
+	i18n.Text(button, text)
 	button.TextColor3 = COLORS.muted
 	button.TextSize = 13
 	button.Font = Enum.Font.GothamSemibold
@@ -437,7 +514,7 @@ end
 
 createPage("RIVALS", "RIVALS", "Functions designed for RIVALS")
 createPage("BloxStrike", "BloxStrike", "Functions designed for BloxStrike")
-createPage("OTHER", "OTHER", "Universal functions for other shooter modes")
+createPage("OTHER", "OTHER", "Interface and general settings")
 
 createTab("RIVALS", "RIVALS", 1)
 createTab("BloxStrike", "BloxStrike", 2)
@@ -519,7 +596,7 @@ local combatEmpty = Instance.new("TextLabel")
 combatEmpty.Name = "CombatEmpty"
 combatEmpty.Size = UDim2.new(1, -10, 0, 54)
 combatEmpty.BackgroundTransparency = 1
-combatEmpty.Text = "No combat functions added yet"
+i18n.Text(combatEmpty, "No combat functions added yet")
 combatEmpty.TextColor3 = COLORS.muted
 combatEmpty.TextTransparency = 0.25
 combatEmpty.TextSize = 13
@@ -531,7 +608,7 @@ combatEmpty.Parent = bloxModules
 
 local otherEmpty = combatEmpty:Clone()
 otherEmpty.Name = "OtherEmpty"
-otherEmpty.Text = "No other functions added yet"
+i18n.Text(otherEmpty, "No other functions added yet")
 otherEmpty.Visible = false
 otherEmpty.Parent = bloxModules
 
@@ -542,7 +619,7 @@ local function createCategoryButton(name: string, order: number)
 	button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
 	button.BackgroundTransparency = name == selectedBloxCategory and 0.38 or 1
 	button.BorderSizePixel = 0
-	button.Text = string.upper(name)
+	i18n.Text(button, string.upper(name))
 	button.TextColor3 = name == selectedBloxCategory and COLORS.text or COLORS.muted
 	button.TextSize = 11
 	button.Font = Enum.Font.GothamSemibold
@@ -1079,7 +1156,7 @@ cardButton.Name = "OpenSettings"
 cardButton.Size = UDim2.new(1, -78, 0, 68)
 cardButton.BackgroundTransparency = 1
 cardButton.BorderSizePixel = 0
-cardButton.Text = ""
+i18n.Text(cardButton, "")
 cardButton.AutoButtonColor = false
 cardButton.ZIndex = 18
 cardButton.Parent = card
@@ -1088,7 +1165,7 @@ local espTitle = Instance.new("TextLabel")
 espTitle.Position = UDim2.fromOffset(18, 10)
 espTitle.Size = UDim2.new(1, -55, 0, 25)
 espTitle.BackgroundTransparency = 1
-espTitle.Text = "ESP"
+i18n.Text(espTitle, "ESP")
 espTitle.TextColor3 = COLORS.text
 espTitle.TextSize = 18
 espTitle.Font = Enum.Font.GothamBold
@@ -1100,7 +1177,7 @@ local espDescription = Instance.new("TextLabel")
 espDescription.Position = UDim2.fromOffset(18, 35)
 espDescription.Size = UDim2.new(1, -55, 0, 19)
 espDescription.BackgroundTransparency = 1
-espDescription.Text = "Player highlighting"
+i18n.Text(espDescription, "Player highlighting")
 espDescription.TextColor3 = COLORS.muted
 espDescription.TextSize = 11
 espDescription.Font = Enum.Font.GothamMedium
@@ -1117,7 +1194,7 @@ toggle.Size = UDim2.fromOffset(52, 30)
 toggle.BackgroundColor3 = Color3.fromRGB(104, 112, 127)
 toggle.BackgroundTransparency = 0.18
 toggle.BorderSizePixel = 0
-toggle.Text = ""
+i18n.Text(toggle, "")
 toggle.AutoButtonColor = false
 toggle.ZIndex = 22
 toggle.Parent = card
@@ -1151,7 +1228,7 @@ local modeLabel = Instance.new("TextLabel")
 modeLabel.Position = UDim2.fromOffset(12, 8)
 modeLabel.Size = UDim2.new(1, -24, 0, 19)
 modeLabel.BackgroundTransparency = 1
-modeLabel.Text = "ESP MODE"
+i18n.Text(modeLabel, "ESP MODE")
 modeLabel.TextColor3 = COLORS.muted
 modeLabel.TextSize = 10
 modeLabel.Font = Enum.Font.GothamBold
@@ -1168,7 +1245,7 @@ local function createModeButton(name: string, text: string, index: number)
 	button.BackgroundColor3 = name == espMode and Color3.fromRGB(16, 19, 25) or Color3.fromRGB(30, 35, 45)
 	button.BackgroundTransparency = name == espMode and 0.55 or 0.76
 	button.BorderSizePixel = 0
-	button.Text = text
+	i18n.Text(button, text)
 	button.TextColor3 = COLORS.text
 	button.TextSize = 12
 	button.Font = Enum.Font.GothamSemibold
@@ -1200,7 +1277,7 @@ local colorTitle = Instance.new("TextLabel")
 colorTitle.Position = UDim2.fromOffset(12, 71)
 colorTitle.Size = UDim2.new(1, -24, 0, 18)
 colorTitle.BackgroundTransparency = 1
-colorTitle.Text = "COLOR"
+i18n.Text(colorTitle, "COLOR")
 colorTitle.TextColor3 = COLORS.muted
 colorTitle.TextSize = 10
 colorTitle.Font = Enum.Font.GothamBold
@@ -1248,7 +1325,7 @@ for _, color in ipairs({
 	button.Size = UDim2.fromOffset(24, 24)
 	button.BackgroundColor3 = color
 	button.BorderSizePixel = 0
-	button.Text = ""
+	i18n.Text(button, "")
 	button.AutoButtonColor = false
 	button.ZIndex = 21
 	button.Parent = palette
@@ -1298,7 +1375,7 @@ stroke(tracerCard, 0.62, 1)
 local tracerOpen = Instance.new("TextButton")
 tracerOpen.Size = UDim2.new(1, -78, 0, 68)
 tracerOpen.BackgroundTransparency = 1
-tracerOpen.Text = ""
+i18n.Text(tracerOpen, "")
 tracerOpen.AutoButtonColor = false
 tracerOpen.ZIndex = 18
 tracerOpen.Parent = tracerCard
@@ -1307,7 +1384,7 @@ local tracerTitle = Instance.new("TextLabel")
 tracerTitle.Position = UDim2.fromOffset(18, 10)
 tracerTitle.Size = UDim2.new(1, -35, 0, 25)
 tracerTitle.BackgroundTransparency = 1
-tracerTitle.Text = "TRACERS"
+i18n.Text(tracerTitle, "TRACERS")
 tracerTitle.TextColor3 = COLORS.text
 tracerTitle.TextSize = 18
 tracerTitle.Font = Enum.Font.GothamBold
@@ -1318,7 +1395,7 @@ tracerTitle.Parent = tracerOpen
 local tracerDescription = tracerTitle:Clone()
 tracerDescription.Position = UDim2.fromOffset(18, 35)
 tracerDescription.Size = UDim2.new(1, -35, 0, 19)
-tracerDescription.Text = "Direction indicators for players"
+i18n.Text(tracerDescription, "Direction indicators for players")
 tracerDescription.TextColor3 = COLORS.muted
 tracerDescription.TextSize = 11
 tracerDescription.Font = Enum.Font.GothamMedium
@@ -1331,7 +1408,7 @@ tracerToggle.Size = UDim2.fromOffset(52, 30)
 tracerToggle.BackgroundColor3 = Color3.fromRGB(104, 112, 127)
 tracerToggle.BackgroundTransparency = 0.18
 tracerToggle.BorderSizePixel = 0
-tracerToggle.Text = ""
+i18n.Text(tracerToggle, "")
 tracerToggle.AutoButtonColor = false
 tracerToggle.ZIndex = 22
 tracerToggle.Parent = tracerCard
@@ -1363,7 +1440,7 @@ local tracerModeLabel = Instance.new("TextLabel")
 tracerModeLabel.Position = UDim2.fromOffset(12, 8)
 tracerModeLabel.Size = UDim2.new(1, -24, 0, 18)
 tracerModeLabel.BackgroundTransparency = 1
-tracerModeLabel.Text = "MODE"
+i18n.Text(tracerModeLabel, "MODE")
 tracerModeLabel.TextColor3 = COLORS.muted
 tracerModeLabel.TextSize = 10
 tracerModeLabel.Font = Enum.Font.GothamBold
@@ -1387,7 +1464,7 @@ local function createTracerMode(name: string, text: string, index: number)
 	button.Size = UDim2.new(0.5, -18, 0, 32)
 	button.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
 	button.BorderSizePixel = 0
-	button.Text = text
+	i18n.Text(button, text)
 	button.TextColor3 = COLORS.text
 	button.TextSize = 11
 	button.Font = Enum.Font.GothamSemibold
@@ -1408,7 +1485,7 @@ refreshTracerModeButtons()
 
 local tracerColorLabel = tracerModeLabel:Clone()
 tracerColorLabel.Position = UDim2.fromOffset(12, 67)
-tracerColorLabel.Text = "COLOR"
+i18n.Text(tracerColorLabel, "COLOR")
 tracerColorLabel.Parent = tracerSettings
 
 local tracerPalette = Instance.new("Frame")
@@ -1432,7 +1509,7 @@ for _, color in ipairs({
 	dot.Size = UDim2.fromOffset(24, 24)
 	dot.BackgroundColor3 = color
 	dot.BorderSizePixel = 0
-	dot.Text = ""
+	i18n.Text(dot, "")
 	dot.AutoButtonColor = false
 	dot.ZIndex = 21
 	dot.Parent = tracerPalette
@@ -1443,7 +1520,7 @@ end
 
 local sizeLabel = tracerModeLabel:Clone()
 sizeLabel.Position = UDim2.fromOffset(12, 119)
-sizeLabel.Text = "THICKNESS / SIZE"
+i18n.Text(sizeLabel, "THICKNESS / SIZE")
 sizeLabel.Parent = tracerSettings
 
 local sizeValue = sizeLabel:Clone()
@@ -1524,7 +1601,7 @@ refreshTracerSizeUI()
 tracerToggle.Activated:Connect(function()
 	tracerEnabled = not tracerEnabled
 	TweenService:Create(tracerToggle, quickTween, {
-		BackgroundColor3 = tracerEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
+		BackgroundColor3 = tracerEnabled and Color3.fromRGB(23, 126, 76) or Color3.fromRGB(104, 112, 127),
 		BackgroundTransparency = tracerEnabled and 0.42 or 0.18,
 	}):Play()
 	TweenService:Create(tracerKnob, quickTween, {
@@ -1560,11 +1637,11 @@ corner(aimCard, 18)
 stroke(aimCard, 0.62, 1)
 do
 	local title = tracerTitle:Clone()
-	title.Text = "AIM"
+	i18n.Text(title, "AIM")
 	title.TextTransparency = 0.4
 	title.Parent = aimCard
 	local description = tracerDescription:Clone()
-	description.Text = "Временно недоступен"
+	i18n.Text(description, "Temporarily unavailable")
 	description.TextTransparency = 0.2
 	description.Size = UDim2.new(1, -90, 0, 19)
 	description.Parent = aimCard
@@ -1599,15 +1676,15 @@ do
 	open.Name = "OpenHitboxSettings"
 	open.Size = UDim2.new(1, -78, 0, 68)
 	open.BackgroundTransparency = 1
-	open.Text = ""
+	i18n.Text(open, "")
 	open.AutoButtonColor = false
 	open.ZIndex = 18
 	open.Parent = hitboxCard
 	local title = tracerTitle:Clone()
-	title.Text = "HITBOX"
+	i18n.Text(title, "HITBOX")
 	title.Parent = open
 	local description = tracerDescription:Clone()
-	description.Text = "Размер голов других игроков"
+	i18n.Text(description, "Other players' head size")
 	description.Parent = open
 	local button = tracerToggle:Clone()
 	button.Name = "HitboxToggle"
@@ -1629,7 +1706,7 @@ do
 	local label = tracerModeLabel:Clone()
 	label.Position = UDim2.fromOffset(12, 9)
 	label.Size = UDim2.new(1, -170, 0, 24)
-	label.Text = "РАЗМЕР ГОЛОВЫ"
+	i18n.Text(label, "HEAD SIZE")
 	label.Parent = settingsPanel
 	local value = label:Clone()
 	value.Name = "HeadSizeValue"
@@ -1646,7 +1723,7 @@ do
 		item.BackgroundTransparency = 0.3
 		item.TextColor3 = COLORS.white
 		item.TextSize = 20
-		item.Text = text
+		i18n.Text(item, text)
 		item.Font = Enum.Font.GothamSemibold
 		item.ZIndex = 22
 		item.Parent = settingsPanel
@@ -1725,7 +1802,7 @@ do
 		hitbox.Enabled = not hitbox.Enabled
 		gui:SetAttribute("HitboxEnabled", hitbox.Enabled)
 		TweenService:Create(button, quickTween, {
-			BackgroundColor3 = hitbox.Enabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
+			BackgroundColor3 = hitbox.Enabled and Color3.fromRGB(23, 126, 76) or Color3.fromRGB(104, 112, 127),
 			BackgroundTransparency = hitbox.Enabled and 0.42 or 0.18,
 		}):Play()
 		TweenService:Create(knob, quickTween, {
@@ -1780,7 +1857,7 @@ switchBloxCategory("Combat")
 toggle.Activated:Connect(function()
 	espEnabled = not espEnabled
 	TweenService:Create(toggle, quickTween, {
-		BackgroundColor3 = espEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(50, 55, 66),
+		BackgroundColor3 = espEnabled and Color3.fromRGB(23, 126, 76) or Color3.fromRGB(50, 55, 66),
 		BackgroundTransparency = espEnabled and 0.42 or 0.55,
 	}):Play()
 	TweenService:Create(toggleKnob, quickTween, {
@@ -2303,7 +2380,7 @@ local function setupRivalsPage()
 
 	local quickButton = openButton:Clone()
 	quickButton.Name = "RivalsAimQuickToggle"
-	quickButton.Text = "AIM"
+	i18n.Text(quickButton, "AIM")
 	quickButton.TextSize = 14
 	quickButton.Visible = false
 	quickButton.Parent = gui
@@ -2385,7 +2462,7 @@ local function setupRivalsPage()
 		item.Position = UDim2.fromOffset(12, y)
 		item.Size = UDim2.new(1, -24, 0, 18)
 		item.BackgroundTransparency = 1
-		item.Text = text
+		i18n.Text(item, text)
 		item.TextColor3 = COLORS.muted
 		item.TextSize = 10
 		item.Font = Enum.Font.GothamBold
@@ -2412,7 +2489,7 @@ local function setupRivalsPage()
 		open.Name = "OpenSettings"
 		open.Size = UDim2.new(1, -78, 0, 68)
 		open.BackgroundTransparency = 1
-		open.Text = ""
+		i18n.Text(open, "")
 		open.AutoButtonColor = false
 		open.ZIndex = 18
 		open.Parent = card
@@ -2434,7 +2511,7 @@ local function setupRivalsPage()
 		toggle.BackgroundColor3 = Color3.fromRGB(104, 112, 127)
 		toggle.BackgroundTransparency = 0.18
 		toggle.BorderSizePixel = 0
-		toggle.Text = ""
+		i18n.Text(toggle, "")
 		toggle.AutoButtonColor = false
 		toggle.ZIndex = 22
 		toggle.Parent = card
@@ -2475,7 +2552,7 @@ local function setupRivalsPage()
 		record.RefreshToggle = function()
 			local enabled = config[key]
 			TweenService:Create(toggle, quickTween, {
-				BackgroundColor3 = if enabled then Color3.fromRGB(10, 12, 16) else Color3.fromRGB(104, 112, 127),
+				BackgroundColor3 = if enabled then Color3.fromRGB(23, 126, 76) else Color3.fromRGB(104, 112, 127),
 				BackgroundTransparency = if enabled then 0.42 else 0.18,
 			}):Play()
 			TweenService:Create(knob, quickTween, {Position = UDim2.fromOffset(if enabled then 25 else 3, 3)}):Play()
@@ -2512,7 +2589,7 @@ local function setupRivalsPage()
 			button.Size = UDim2.fromOffset(24, 24)
 			button.BackgroundColor3 = color
 			button.BorderSizePixel = 0
-			button.Text = ""
+			i18n.Text(button, "")
 			button.AutoButtonColor = false
 			button.ZIndex = 22
 			button.Parent = row
@@ -2608,11 +2685,21 @@ local function setupRivalsPage()
 		button.TextColor3 = COLORS.white
 		button.TextSize = 11
 		button.Font = Enum.Font.GothamSemibold
+		button.AutoButtonColor = false
 		button.ZIndex = 22
 		button.Parent = parent
 		corner(button, 10)
-		stroke(button, 0.6)
-		local function refresh() button.Text = if config[key] then "ВКЛ" else "ВЫКЛ" end
+		local outline = stroke(button, 0.6)
+		local function refresh()
+			local enabled = config[key]
+			i18n.Text(button, if enabled then "ON" else "OFF")
+			button.BackgroundColor3 = if enabled then Color3.fromRGB(23, 94, 64) else Color3.fromRGB(13, 16, 22)
+			button.BackgroundTransparency = if enabled then 0.12 else 0.35
+			button.TextColor3 = if enabled then Color3.fromRGB(111, 255, 171) else COLORS.muted
+			outline.Color = if enabled then Color3.fromRGB(70, 235, 135) else COLORS.white
+			outline.Transparency = if enabled then 0.15 else 0.65
+			outline.Thickness = if enabled then 1.4 else 1
+		end
 		button.Activated:Connect(function()
 			config[key] = not config[key]
 			if not rivals.TurnBody then releaseBody() end
@@ -2622,16 +2709,16 @@ local function setupRivalsPage()
 		refresh()
 	end
 
-	local aimSettings = makeCard("Aim", "AIM", "В голову · работает при закрытом меню", "Combat", 2, 376)
-	label(aimSettings, "ВЫБОР ЦЕЛИ", 10)
+	local aimSettings = makeCard("Aim", "AIM", "Head aim · close the menu to use", "Combat", 2, 376)
+	label(aimSettings, "TARGET SELECTION", 10)
 	local modeHelp = label(aimSettings, "", 68)
 	modeHelp.Size = UDim2.new(1, -24, 0, 30)
 	modeHelp.TextWrapped = true
 	modeHelp.Font = Enum.Font.GothamMedium
 	local targetModes = {
-		{Key = "Nearest", Text = "Ближайшая", Help = "Ближайшая цель на экране по расстоянию до тебя. Круг не ограничивает выбор."},
-		{Key = "Circle", Text = "В круге", Help = "Выбирает голову у центра и удерживает внутри круга. Учитывает настройку стен."},
-		{Key = "Lock", Text = "До смерти", Help = "Захват в круге, удержание до смерти. За стеной пауза, если стены не игнорируются."},
+		{Key = "Nearest", Text = "Nearest", Help = "Nearest on-screen target by distance to you. The circle does not limit selection."},
+		{Key = "Circle", Text = "In circle", Help = "Selects a head near the center and holds it inside the circle. Respects the wall setting."},
+		{Key = "Lock", Text = "Until death", Help = "Acquires inside the circle, holds until death. Pauses behind walls unless they are ignored."},
 	}
 	local modeButtons = {}
 	local function refreshMode()
@@ -2641,7 +2728,7 @@ local function setupRivalsPage()
 			local entry = modeButtons[mode.Key]
 			entry.Button.BackgroundTransparency = if active then 0.3 else 0.75
 			entry.Stroke.Transparency = if active then 0.25 else 0.7
-			if active then modeHelp.Text = mode.Help end
+			if active then i18n.Text(modeHelp, mode.Help) end
 		end
 		refreshEnabled()
 	end
@@ -2652,7 +2739,7 @@ local function setupRivalsPage()
 		button.Size = UDim2.new(1 / 3, -16, 0, 28)
 		button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
 		button.BorderSizePixel = 0
-		button.Text = mode.Text
+		i18n.Text(button, mode.Text)
 		button.TextColor3 = COLORS.text
 		button.TextSize = 11
 		button.Font = Enum.Font.GothamSemibold
@@ -2668,19 +2755,19 @@ local function setupRivalsPage()
 			refreshMode()
 		end)
 	end
-	slider(aimSettings, 106, "Radius", "РАДИУС КРУГА", 40, 300, 5)
-	palette(aimSettings, 158, "AimColor", "ЦВЕТ КРУГА")
-	option(aimSettings, 220, "EnemiesOnly", "ТОЛЬКО ПРОТИВНИКИ")
-	option(aimSettings, 258, "IgnoreWalls", "ИГНОРИРОВАТЬ СТЕНЫ")
-	option(aimSettings, 296, "TurnBody", "ПОВОРОТ ПЕРСОНАЖА")
-	option(aimSettings, 334, "ShowAimButton", "КНОПКА AIM НА ЭКРАНЕ")
+	slider(aimSettings, 106, "Radius", "CIRCLE RADIUS", 40, 300, 5)
+	palette(aimSettings, 158, "AimColor", "CIRCLE COLOR")
+	option(aimSettings, 220, "EnemiesOnly", "ENEMIES ONLY")
+	option(aimSettings, 258, "IgnoreWalls", "IGNORE WALLS")
+	option(aimSettings, 296, "TurnBody", "TURN CHARACTER")
+	option(aimSettings, 334, "ShowAimButton", "SHOW AIM BUTTON")
 	refreshMode()
-	local espSettings = makeCard("ESP", "ESP", "Подсветка силуэта и мягкая заливка", "Visuals", 2, 120)
-	palette(espSettings, 10, "ESPColor", "ЦВЕТ ПОДСВЕТКИ")
-	slider(espSettings, 72, "FillTransparency", "ПРОЗРАЧНОСТЬ", 0.1, 0.9, 0.1)
-	local tracerSettings = makeCard("Tracers", "TRACERS", "Линии направления к игрокам", "Visuals", 3, 120)
-	palette(tracerSettings, 10, "TracerColor", "ЦВЕТ ЛИНИЙ")
-	slider(tracerSettings, 72, "Thickness", "ТОЛЩИНА", 1, 6, 0.5)
+	local espSettings = makeCard("ESP", "ESP", "Outline and soft player fill", "Visuals", 2, 120)
+	palette(espSettings, 10, "ESPColor", "HIGHLIGHT COLOR")
+	slider(espSettings, 72, "FillTransparency", "TRANSPARENCY", 0.1, 0.9, 0.1)
+	local tracerSettings = makeCard("Tracers", "TRACERS", "Direction lines to players", "Visuals", 3, 120)
+	palette(tracerSettings, 10, "TracerColor", "LINE COLOR")
+	slider(tracerSettings, 72, "Thickness", "THICKNESS", 1, 6, 0.5)
 
 	local categoryBar = Instance.new("Frame")
 	categoryBar.Name = "RivalsCategoryBar"
@@ -2706,7 +2793,7 @@ local function setupRivalsPage()
 	categoryPadding.PaddingTop = UDim.new(0, 5)
 	categoryPadding.PaddingBottom = UDim.new(0, 5)
 	categoryPadding.Parent = categoryBar
-	local otherEmpty = label(modules, "Пока нет функций", 0)
+	local otherEmpty = label(modules, "No functions added yet", 0)
 	otherEmpty.Name = "RivalsOtherEmpty"
 	otherEmpty.Size = UDim2.new(1, -10, 0, 54)
 	otherEmpty.LayoutOrder = 2
@@ -2737,7 +2824,7 @@ local function setupRivalsPage()
 		button.Size = UDim2.new(1 / 3, -7, 1, 0)
 		button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
 		button.BorderSizePixel = 0
-		button.Text = string.upper(name)
+		i18n.Text(button, string.upper(name))
 		button.TextSize = 11
 		button.Font = Enum.Font.GothamSemibold
 		button.AutoButtonColor = false
@@ -2837,6 +2924,77 @@ local function setupRivalsPage()
 	switchTab("RIVALS")
 end
 setupRivalsPage()
+
+local function setupLanguagePage()
+	local page = pages["OTHER"]
+	page.EmptyText.Visible = false
+	local header = page.Modules:FindFirstChild("PageHeader")
+	if header and header:IsA("Frame") then header.Visible = false end
+	local card = Instance.new("Frame")
+	card.Name = "LanguageCard"
+	card.Size = UDim2.new(1, -10, 0, 174)
+	card.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
+	card.BackgroundTransparency = 0.5
+	card.BorderSizePixel = 0
+	card.LayoutOrder = 1
+	card.ZIndex = 17
+	card.Parent = page.Modules
+	corner(card, 18)
+	stroke(card, 0.62, 1)
+	local function label(name: string, text: string, y: number, size: number)
+		local item = Instance.new("TextLabel")
+		item.Name = name
+		item.Position = UDim2.fromOffset(18, y)
+		item.Size = UDim2.new(1, -36, 0, 24)
+		item.BackgroundTransparency = 1
+		i18n.Text(item, text)
+		item.TextColor3 = COLORS.muted
+		item.TextSize = size
+		item.Font = Enum.Font.GothamMedium
+		item.TextXAlignment = Enum.TextXAlignment.Left
+		item.ZIndex = 19
+		item.Parent = card
+		return item
+	end
+	local title = label("Title", "LANGUAGE", 12, 18)
+	title.Font = Enum.Font.GothamBold
+	title.TextColor3 = COLORS.text
+	label("Description", "Choose the interface language", 40, 12)
+	local note = label("Note", "Applies to all tabs. Your settings stay the same.", 134, 11)
+	note.TextWrapped = true
+	local buttons = {}
+	local function refresh()
+		gui:SetAttribute("UILanguage", i18n.Language)
+		for language, entry in pairs(buttons) do
+			local active = language == i18n.Language
+			entry.Button.BackgroundColor3 = if active then Color3.fromRGB(23, 94, 64) else Color3.fromRGB(13, 16, 22)
+			entry.Button.BackgroundTransparency = if active then 0.12 else 0.45
+			entry.Button.TextColor3 = if active then Color3.fromRGB(111, 255, 171) else COLORS.muted
+			entry.Stroke.Color = if active then Color3.fromRGB(70, 235, 135) else COLORS.white
+			entry.Stroke.Transparency = if active then 0.15 else 0.65
+		end
+	end
+	for index, language in ipairs({{Id = "en", Name = "English"}, {Id = "ru", Name = "Русский"}}) do
+		local button = Instance.new("TextButton")
+		button.Name = "Language_" .. language.Id
+		button.Position = UDim2.new((index - 1) * 0.5, if index == 1 then 14 else 4, 0, 80)
+		button.Size = UDim2.new(0.5, -18, 0, 42)
+		button.BorderSizePixel = 0
+		-- Language names stay in their own language, so either choice is easy to find.
+		i18n.Text(button, language.Name)
+		button.TextSize = 14
+		button.Font = Enum.Font.GothamSemibold
+		button.AutoButtonColor = false
+		button.ZIndex = 20
+		button.Parent = card
+		corner(button, 12)
+		buttons[language.Id] = {Button = button, Stroke = stroke(button, 0.65)}
+		button.Activated:Connect(function() i18n.SetLanguage(language.Id) end)
+	end
+	i18n.OnChanged = refresh
+	refresh()
+end
+setupLanguagePage()
 
 local cameraConnection: RBXScriptConnection? = nil
 local function updateResponsiveScale()
@@ -2954,4 +3112,6 @@ gui.Destroying:Connect(function()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
 	if effectsFolder.Parent then effectsFolder:Destroy() end
 	if blur.Parent then blur:Destroy() end
+	i18n.OnChanged = nil
+	table.clear(i18n.Bindings)
 end)
