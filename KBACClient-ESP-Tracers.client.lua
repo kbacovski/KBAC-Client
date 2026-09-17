@@ -18,11 +18,18 @@ if oldGui then
 	pcall(function()
 		RunService:UnbindFromRenderStep(if type(previousAimBinding) == "string" then previousAimBinding else "KBACClientAim")
 	end)
+	local previousRivalsBinding = oldGui:GetAttribute("RivalsRenderStepName")
+	if type(previousRivalsBinding) == "string" then
+		pcall(function() RunService:UnbindFromRenderStep(previousRivalsBinding) end)
+	end
 	oldGui:Destroy()
 end
 
 local oldAimOverlay = playerGui:FindFirstChild("KBACAimOverlay")
 if oldAimOverlay then oldAimOverlay:Destroy() end
+
+local oldRivalsOverlay = playerGui:FindFirstChild("KBACRivalsOverlay")
+if oldRivalsOverlay then oldRivalsOverlay:Destroy() end
 
 local oldBlur = Lighting:FindFirstChild("KBACClientBlur")
 if oldBlur then oldBlur:Destroy() end
@@ -74,7 +81,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "hitbox-4")
+gui:SetAttribute("ClientBuild", "rivals-1")
 gui:SetAttribute("AimStatus", "Временно недоступен")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -220,7 +227,7 @@ subtitle.Name = "Subtitle"
 subtitle.Position = UDim2.fromOffset(29, 50)
 subtitle.Size = UDim2.new(1, -100, 0, 20)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "Shooter Control Center · HITBOX"
+subtitle.Text = "Shooter Control Center · RIVALS"
 subtitle.TextColor3 = COLORS.muted
 subtitle.TextSize = 13
 subtitle.Font = Enum.Font.GothamMedium
@@ -2113,6 +2120,505 @@ local visualRenderConnection = RunService.RenderStepped:Connect(function()
 		end
 	end
 end)
+
+--============================================================
+-- RIVALS: separate controls and standard Player.Character adapter.
+--============================================================
+local function setupRivalsPage()
+	local rivals = {
+		Aim = false, ESP = false, Tracers = false,
+		Radius = 120, AimColor = Color3.fromRGB(150, 105, 255),
+		ESPColor = Color3.fromRGB(255, 70, 82), FillTransparency = 0.6,
+		TracerColor = Color3.fromRGB(70, 190, 255), Thickness = 2,
+		EnemiesOnly = true, TurnBody = true,
+	}
+	local config: any = rivals
+	local connections: {RBXScriptConnection} = {}
+	local stopped = false
+	local visuals: {[Player]: {Model: Model, Highlight: Highlight, Line: Frame}} = {}
+	local turningHumanoid: Humanoid? = nil
+	local savedAutoRotate = true
+	local modules = pages["RIVALS"].Modules
+	pages["RIVALS"].EmptyText.Visible = false
+	local header = modules:FindFirstChild("PageHeader")
+	if header and header:IsA("Frame") then header.Visible = false end
+
+	local overlay = Instance.new("ScreenGui")
+	overlay.Name = "KBACRivalsOverlay"
+	overlay.ResetOnSpawn = false
+	overlay.IgnoreGuiInset = true
+	overlay.ScreenInsets = Enum.ScreenInsets.None
+	overlay.DisplayOrder = gui.DisplayOrder - 1
+	overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	overlay.Parent = playerGui
+	local visualFolder = Instance.new("Folder")
+	visualFolder.Name = "RivalsVisuals"
+	visualFolder.Parent = effectsFolder
+
+	local circle = Instance.new("Frame")
+	circle.Name = "AimCircle"
+	circle.AnchorPoint = Vector2.new(0.5, 0.5)
+	circle.Position = UDim2.fromScale(0.5, 0.5)
+	circle.Size = UDim2.fromOffset(rivals.Radius * 2, rivals.Radius * 2)
+	circle.BackgroundTransparency = 1
+	circle.BorderSizePixel = 0
+	circle.Visible = false
+	circle.ZIndex = 5
+	circle.Parent = overlay
+	corner(circle, 1000)
+	local circleOutline = stroke(circle, 0.15, 1.5)
+	circleOutline.Color = rivals.AimColor
+
+	local function releaseBody()
+		if turningHumanoid then
+			turningHumanoid.AutoRotate = savedAutoRotate
+			turningHumanoid = nil
+		end
+	end
+
+	-- RIVALS TARGET ADAPTER BEGIN
+	local function isAlive(model: Model): boolean
+		if not model:IsDescendantOf(workspace) then return false end
+		if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true
+			or model:GetAttribute("Alive") == false or model:GetAttribute("IsAlive") == false then return false end
+		local health = model:GetAttribute("Health")
+		if type(health) == "number" and health <= 0 then return false end
+		local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
+		return not humanoid or humanoid.Health > 0
+	end
+
+	local function characterParts(other: Player): (Model?, BasePart?, BasePart?)
+		if other == player then return nil, nil, nil end
+		local model = other.Character
+		if not model or not isAlive(model) then return nil, nil, nil end
+		local head = model:FindFirstChild("Head")
+		local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
+		return model, if head and head:IsA("BasePart") then head else nil,
+			if root and root:IsA("BasePart") then root else nil
+	end
+
+	local function isEnemy(other: Player): boolean
+		return not rivals.EnemiesOnly or player.Neutral or other.Neutral
+			or player.Team == nil or other.Team == nil or player.Team ~= other.Team
+	end
+
+	local function screenDistance(camera: Camera, position: Vector3): number?
+		local point, onScreen = camera:WorldToViewportPoint(position)
+		if not onScreen or point.Z <= 0 then return nil end
+		local dx, dy = point.X - camera.ViewportSize.X * 0.5, point.Y - camera.ViewportSize.Y * 0.5
+		local distance = math.sqrt(dx * dx + dy * dy)
+		return if distance <= rivals.Radius then distance else nil
+	end
+
+	local function unobstructed(camera: Camera, model: Model, head: BasePart): boolean
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		local excluded: {Instance} = {effectsFolder, camera}
+		if player.Character then table.insert(excluded, player.Character) end
+		params.FilterDescendantsInstances = excluded
+		local result = workspace:Raycast(camera.CFrame.Position, head.Position - camera.CFrame.Position, params)
+		return result == nil or result.Instance:IsDescendantOf(model)
+	end
+
+	local function findTarget(camera: Camera, currentPlayers: {Player}): BasePart?
+		local best: BasePart? = nil
+		local bestDistance = math.huge
+		for _, other in ipairs(currentPlayers) do
+			local model, head = characterParts(other)
+			if model and head and isEnemy(other) then
+				local distance = screenDistance(camera, head.Position)
+				if distance and distance < bestDistance and unobstructed(camera, model, head) then
+					best, bestDistance = head, distance
+				end
+			end
+		end
+		return best
+	end
+	-- RIVALS TARGET ADAPTER END
+
+	local function destroyVisual(other: Player)
+		local visual = visuals[other]
+		if not visual then return end
+		visual.Highlight:Destroy()
+		visual.Line:Destroy()
+		visuals[other] = nil
+	end
+
+	local function ensureVisual(other: Player, model: Model)
+		local existing = visuals[other]
+		if existing and existing.Model == model then return existing end
+		destroyVisual(other)
+		local highlight = Instance.new("Highlight")
+		highlight.Name = "RivalsESP_" .. other.Name
+		highlight.Adornee = model
+		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		highlight.Enabled = false
+		highlight.Parent = visualFolder
+		local line = Instance.new("Frame")
+		line.Name = "RivalsTracer_" .. other.Name
+		line.AnchorPoint = Vector2.new(0.5, 0.5)
+		line.BorderSizePixel = 0
+		line.Visible = false
+		line.ZIndex = 2
+		line.Parent = overlay
+		corner(line, 3)
+		local fade = Instance.new("UIGradient")
+		fade.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.75), NumberSequenceKeypoint.new(1, 0.05),
+		})
+		fade.Parent = line
+		local visual = {Model = model, Highlight = highlight, Line = line}
+		visuals[other] = visual
+		return visual
+	end
+
+	local function refreshEnabled()
+		gui:SetAttribute("RivalsAimEnabled", rivals.Aim)
+		gui:SetAttribute("RivalsESPEnabled", rivals.ESP)
+		gui:SetAttribute("RivalsTracersEnabled", rivals.Tracers)
+		circle.Visible = rivals.Aim
+		if not rivals.Aim then releaseBody() end
+		for _, visual in pairs(visuals) do
+			visual.Highlight.Enabled = rivals.ESP
+			if not rivals.Tracers then visual.Line.Visible = false end
+		end
+	end
+
+	-- Shared card builder keeps all three outlines, switches and palettes consistent.
+	local cards = {}
+	local function label(parent: Instance, text: string, y: number): TextLabel
+		local item = Instance.new("TextLabel")
+		item.Position = UDim2.fromOffset(12, y)
+		item.Size = UDim2.new(1, -24, 0, 18)
+		item.BackgroundTransparency = 1
+		item.Text = text
+		item.TextColor3 = COLORS.muted
+		item.TextSize = 10
+		item.Font = Enum.Font.GothamBold
+		item.TextXAlignment = Enum.TextXAlignment.Left
+		item.ZIndex = 21
+		item.Parent = parent
+		return item
+	end
+
+	local function makeCard(key: string, titleText: string, descriptionText: string, order: number, height: number)
+		local card = Instance.new("Frame")
+		card.Name = "Rivals" .. key .. "Card"
+		card.Size = UDim2.new(1, -10, 0, 68)
+		card.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
+		card.BackgroundTransparency = 0.5
+		card.BorderSizePixel = 0
+		card.ClipsDescendants = true
+		card.LayoutOrder = order
+		card.ZIndex = 17
+		card.Parent = modules
+		corner(card, 18)
+		stroke(card, 0.62, 1)
+		local open = Instance.new("TextButton")
+		open.Name = "OpenSettings"
+		open.Size = UDim2.new(1, -78, 0, 68)
+		open.BackgroundTransparency = 1
+		open.Text = ""
+		open.AutoButtonColor = false
+		open.ZIndex = 18
+		open.Parent = card
+		local titleLabel = label(open, titleText, 10)
+		titleLabel.Position = UDim2.fromOffset(18, 10)
+		titleLabel.Size = UDim2.new(1, -30, 0, 25)
+		titleLabel.TextSize = 18
+		titleLabel.TextColor3 = COLORS.text
+		local description = label(open, descriptionText, 35)
+		description.Position = UDim2.fromOffset(18, 35)
+		description.TextSize = 11
+		description.Font = Enum.Font.GothamMedium
+		description.TextTruncate = Enum.TextTruncate.AtEnd
+		local toggle = Instance.new("TextButton")
+		toggle.Name = "Toggle"
+		toggle.AnchorPoint = Vector2.new(1, 0)
+		toggle.Position = UDim2.new(1, -14, 0, 19)
+		toggle.Size = UDim2.fromOffset(52, 30)
+		toggle.BackgroundColor3 = Color3.fromRGB(104, 112, 127)
+		toggle.BackgroundTransparency = 0.18
+		toggle.BorderSizePixel = 0
+		toggle.Text = ""
+		toggle.AutoButtonColor = false
+		toggle.ZIndex = 22
+		toggle.Parent = card
+		corner(toggle, 15)
+		stroke(toggle, 0.55)
+		local knob = Instance.new("Frame")
+		knob.Position = UDim2.fromOffset(3, 3)
+		knob.Size = UDim2.fromOffset(24, 24)
+		knob.BackgroundColor3 = COLORS.white
+		knob.BorderSizePixel = 0
+		knob.ZIndex = 23
+		knob.Parent = toggle
+		corner(knob, 12)
+		local settings = Instance.new("Frame")
+		settings.Name = "Settings"
+		settings.Position = UDim2.fromOffset(12, 76)
+		settings.Size = UDim2.new(1, -24, 0, height)
+		settings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
+		settings.BackgroundTransparency = 0.54
+		settings.BorderSizePixel = 0
+		settings.Visible = false
+		settings.ZIndex = 18
+		settings.Parent = card
+		corner(settings, 15)
+		stroke(settings, 0.58)
+		local record = {Card = card, Settings = settings, Height = height, Expanded = false}
+		table.insert(cards, record)
+		open.Activated:Connect(function()
+			local expand = not record.Expanded
+			for _, entry in ipairs(cards) do
+				entry.Expanded = entry == record and expand
+				entry.Settings.Visible = entry.Expanded
+				entry.Card.Size = UDim2.new(1, -10, 0, if entry.Expanded then entry.Height + 88 else 68)
+			end
+			-- Bring the opened card header into view, including on phones.
+			modules.CanvasPosition = Vector2.new(0, (order - 1) * 76)
+		end)
+		toggle.Activated:Connect(function()
+			config[key] = not config[key]
+			local enabled = config[key]
+			TweenService:Create(toggle, quickTween, {
+				BackgroundColor3 = if enabled then Color3.fromRGB(10, 12, 16) else Color3.fromRGB(104, 112, 127),
+				BackgroundTransparency = if enabled then 0.42 else 0.18,
+			}):Play()
+			TweenService:Create(knob, quickTween, {Position = UDim2.fromOffset(if enabled then 25 else 3, 3)}):Play()
+			refreshEnabled()
+		end)
+		return settings
+	end
+
+	local function palette(parent: Instance, y: number, key: string, titleText: string)
+		label(parent, titleText, y)
+		local row = Instance.new("Frame")
+		row.Name = key .. "Palette"
+		row.Position = UDim2.fromOffset(12, y + 23)
+		row.Size = UDim2.new(1, -24, 0, 26)
+		row.BackgroundTransparency = 1
+		row.ZIndex = 20
+		row.Parent = parent
+		local layout = Instance.new("UIListLayout")
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		layout.Padding = UDim.new(0, 8)
+		layout.Parent = row
+		local entries = {}
+		for _, color in ipairs({
+			Color3.fromRGB(255, 70, 82), Color3.fromRGB(255, 170, 45),
+			Color3.fromRGB(255, 235, 70), Color3.fromRGB(70, 235, 135),
+			Color3.fromRGB(70, 190, 255), Color3.fromRGB(150, 105, 255),
+			Color3.fromRGB(255, 105, 220), Color3.fromRGB(255, 255, 255),
+		}) do
+			local button = Instance.new("TextButton")
+			button.Size = UDim2.fromOffset(24, 24)
+			button.BackgroundColor3 = color
+			button.BorderSizePixel = 0
+			button.Text = ""
+			button.AutoButtonColor = false
+			button.ZIndex = 22
+			button.Parent = row
+			corner(button, 12)
+			local outline = stroke(button, if color == config[key] then 0.05 else 0.65, 2)
+			table.insert(entries, {Stroke = outline, Color = color})
+			button.Activated:Connect(function()
+				config[key] = color
+				for _, entry in ipairs(entries) do entry.Stroke.Transparency = if entry.Color == color then 0.05 else 0.65 end
+				circleOutline.Color = rivals.AimColor
+			end)
+		end
+	end
+
+	local function slider(parent: Instance, y: number, key: string, titleText: string, minimum: number, maximum: number, step: number)
+		local caption = label(parent, titleText, y)
+		caption.Size = UDim2.new(1, -100, 0, 18)
+		local valueLabel = label(parent, "", y)
+		valueLabel.Position = UDim2.new(1, -84, 0, y)
+		valueLabel.Size = UDim2.fromOffset(72, 18)
+		valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+		local track = Instance.new("Frame")
+		track.Name = key .. "Slider"
+		track.Position = UDim2.fromOffset(14, y + 29)
+		track.Size = UDim2.new(1, -28, 0, 6)
+		track.BackgroundColor3 = Color3.fromRGB(105, 114, 130)
+		track.BackgroundTransparency = 0.35
+		track.BorderSizePixel = 0
+		track.Active = true
+		track.ZIndex = 21
+		track.Parent = parent
+		corner(track, 3)
+		local fill = Instance.new("Frame")
+		fill.BackgroundColor3 = COLORS.white
+		fill.BackgroundTransparency = 0.15
+		fill.BorderSizePixel = 0
+		fill.ZIndex = 22
+		fill.Parent = track
+		corner(fill, 3)
+		local knob = Instance.new("Frame")
+		knob.AnchorPoint = Vector2.new(0.5, 0.5)
+		knob.Size = UDim2.fromOffset(18, 18)
+		knob.BackgroundColor3 = COLORS.white
+		knob.BorderSizePixel = 0
+		knob.ZIndex = 23
+		knob.Parent = track
+		corner(knob, 9)
+		local touch: InputObject? = nil
+		local dragging = false
+		local function refresh()
+			local value = config[key]
+			local alpha = (value - minimum) / (maximum - minimum)
+			fill.Size = UDim2.fromScale(alpha, 1)
+			knob.Position = UDim2.fromScale(alpha, 0.5)
+			valueLabel.Text = if step >= 1 then tostring(math.round(value)) else string.format("%.1f", value)
+			circle.Size = UDim2.fromOffset(rivals.Radius * 2, rivals.Radius * 2)
+		end
+		local function setFromX(x: number)
+			local alpha = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+			config[key] = math.clamp(math.round((minimum + alpha * (maximum - minimum)) / step) * step, minimum, maximum)
+			refresh()
+		end
+		local function start(input: InputObject)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				touch = if input.UserInputType == Enum.UserInputType.Touch then input else nil
+				setFromX(input.Position.X)
+			end
+		end
+		track.InputBegan:Connect(start)
+		knob.InputBegan:Connect(start)
+		table.insert(connections, UserInputService.InputChanged:Connect(function(input: InputObject)
+			if dragging and ((touch ~= nil and input == touch) or (touch == nil and input.UserInputType == Enum.UserInputType.MouseMovement)) then
+				setFromX(input.Position.X)
+			end
+		end))
+		table.insert(connections, UserInputService.InputEnded:Connect(function(input: InputObject)
+			if input == touch or input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false touch = nil end
+		end))
+		refresh()
+	end
+
+	local function option(parent: Instance, y: number, key: string, titleText: string)
+		local text = label(parent, titleText, y + 6)
+		text.Size = UDim2.new(1, -95, 0, 18)
+		local button = Instance.new("TextButton")
+		button.Position = UDim2.new(1, -72, 0, y)
+		button.Size = UDim2.fromOffset(60, 30)
+		button.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
+		button.BackgroundTransparency = 0.35
+		button.BorderSizePixel = 0
+		button.TextColor3 = COLORS.white
+		button.TextSize = 11
+		button.Font = Enum.Font.GothamSemibold
+		button.ZIndex = 22
+		button.Parent = parent
+		corner(button, 10)
+		stroke(button, 0.6)
+		local function refresh() button.Text = if config[key] then "ВКЛ" else "ВЫКЛ" end
+		button.Activated:Connect(function()
+			config[key] = not config[key]
+			if not rivals.TurnBody then releaseBody() end
+			refresh()
+		end)
+		refresh()
+	end
+
+	local aimSettings = makeCard("Aim", "AIM", "В голову · работает при закрытом меню", 1, 204)
+	slider(aimSettings, 10, "Radius", "РАДИУС КРУГА", 40, 300, 5)
+	palette(aimSettings, 62, "AimColor", "ЦВЕТ КРУГА")
+	option(aimSettings, 124, "EnemiesOnly", "ТОЛЬКО ПРОТИВНИКИ")
+	option(aimSettings, 162, "TurnBody", "ПОВОРОТ ПЕРСОНАЖА")
+	local espSettings = makeCard("ESP", "ESP", "Подсветка силуэта и мягкая заливка", 2, 120)
+	palette(espSettings, 10, "ESPColor", "ЦВЕТ ПОДСВЕТКИ")
+	slider(espSettings, 72, "FillTransparency", "ПРОЗРАЧНОСТЬ", 0.1, 0.9, 0.1)
+	local tracerSettings = makeCard("Tracers", "TRACERS", "Линии направления к игрокам", 3, 120)
+	palette(tracerSettings, 10, "TracerColor", "ЦВЕТ ЛИНИЙ")
+	slider(tracerSettings, 72, "Thickness", "ТОЛЩИНА", 1, 6, 0.5)
+
+	local function turnBody(target: Vector3)
+		local character = player.Character
+		local humanoid = if character then character:FindFirstChildWhichIsA("Humanoid") else nil
+		local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if not rivals.TurnBody or not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart")
+			or root.Anchored or humanoid.SeatPart then releaseBody() return end
+		if turningHumanoid ~= humanoid then
+			releaseBody()
+			turningHumanoid, savedAutoRotate = humanoid, humanoid.AutoRotate
+		end
+		humanoid.AutoRotate = false
+		local position = root.Position
+		local flat = Vector3.new(target.X, position.Y, target.Z)
+		if (flat - position).Magnitude > 0.001 then root.CFrame = CFrame.lookAt(position, flat) end
+	end
+
+	local binding = "KBACClientRivalsAim"
+	gui:SetAttribute("RivalsRenderStepName", binding)
+	local function render()
+		if stopped then return end
+		local camera = workspace.CurrentCamera
+		if not camera then circle.Visible = false releaseBody() return end
+		circle.Visible = rivals.Aim
+		local currentPlayers = if rivals.Aim or rivals.ESP or rivals.Tracers then Players:GetPlayers() else {}
+		local localCharacter = player.Character
+		local canAim = rivals.Aim and not panel.Visible and UserInputService:GetFocusedTextBox() == nil
+			and localCharacter ~= nil and isAlive(localCharacter)
+		local target = if canAim then findTarget(camera, currentPlayers) else nil
+		if target and (target.Position - camera.CFrame.Position).Magnitude > 0.001 then
+			camera.CFrame = CFrame.lookAt(camera.CFrame.Position, target.Position)
+			turnBody(target.Position)
+		else
+			releaseBody()
+		end
+		local active: {[Player]: boolean} = {}
+		if rivals.ESP or rivals.Tracers then
+			for _, other in ipairs(currentPlayers) do
+				local model, head, root = characterParts(other)
+				if model then
+					active[other] = true
+					local visual = ensureVisual(other, model)
+					visual.Highlight.Enabled = rivals.ESP
+					visual.Highlight.FillColor = rivals.ESPColor
+					visual.Highlight.OutlineColor = rivals.ESPColor:Lerp(COLORS.white, 0.35)
+					visual.Highlight.FillTransparency = rivals.FillTransparency
+					visual.Highlight.OutlineTransparency = 0.08
+					visual.Line.Visible = false
+					local destination = root or head
+					if rivals.Tracers and destination then
+						local projected, onScreen = camera:WorldToViewportPoint(destination.Position)
+						if onScreen and projected.Z > 0 then
+							local origin = Vector2.new(camera.ViewportSize.X * 0.5, camera.ViewportSize.Y - 10)
+							local finish = Vector2.new(projected.X, projected.Y)
+							local delta = finish - origin
+							visual.Line.Position = UDim2.fromOffset((origin.X + finish.X) * 0.5, (origin.Y + finish.Y) * 0.5)
+							visual.Line.Size = UDim2.fromOffset(delta.Magnitude, rivals.Thickness)
+							visual.Line.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+							visual.Line.BackgroundColor3 = rivals.TracerColor
+							visual.Line.Visible = true
+						end
+					end
+				end
+			end
+		end
+		for other in pairs(visuals) do if not active[other] then destroyVisual(other) end end
+	end
+
+	table.insert(connections, Players.PlayerRemoving:Connect(destroyVisual))
+	table.insert(connections, player.CharacterRemoving:Connect(function() releaseBody() end))
+	gui.Destroying:Connect(function()
+		stopped = true
+		RunService:UnbindFromRenderStep(binding)
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		releaseBody()
+		for other in pairs(visuals) do destroyVisual(other) end
+		overlay:Destroy()
+		visualFolder:Destroy()
+	end)
+	RunService:BindToRenderStep(binding, Enum.RenderPriority.Last.Value + 1, render)
+	refreshEnabled()
+	switchTab("RIVALS")
+end
+setupRivalsPage()
 
 local cameraConnection: RBXScriptConnection? = nil
 local function updateResponsiveScale()
