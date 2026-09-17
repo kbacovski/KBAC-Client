@@ -55,6 +55,12 @@ local i18n = {
 	Bindings = setmetatable({}, {__mode = "k"}) :: {[Instance]: string},
 	OnChanged = nil :: (() -> ())?,
 	Russian = {
+		["AIM"] = "НАВЕДЕНИЕ",
+		["ESP"] = "ПОДСВЕТКА",
+		["NOCLIP"] = "СКВОЗЬ СТЕНЫ",
+		["INFINITE JUMP"] = "БЕСКОНЕЧНЫЙ ПРЫЖОК",
+		["Walk through walls"] = "Проход сквозь стены",
+		["Jump again while in the air"] = "Повторный прыжок в воздухе",
 		["OTHER"] = "ДРУГОЕ",
 		["COMBAT"] = "БОЙ",
 		["VISUALS"] = "ВИЗУАЛ",
@@ -66,7 +72,7 @@ local i18n = {
 		["No combat functions added yet"] = "Боевые функции пока не добавлены",
 		["No other functions added yet"] = "Другие функции пока не добавлены",
 		["Player highlighting"] = "Подсветка игроков",
-		["ESP MODE"] = "РЕЖИМ ESP",
+		["ESP MODE"] = "РЕЖИМ ПОДСВЕТКИ",
 		["PLAYER"] = "ИГРОК",
 		["BOX"] = "РАМКА",
 		["SKELETON"] = "СКЕЛЕТ",
@@ -88,7 +94,7 @@ local i18n = {
 		["Nearest"] = "Ближайшая",
 		["In circle"] = "В круге",
 		["Until death"] = "До смерти",
-		["Nearest on-screen target by distance to you. The circle does not limit selection."] = "Ближайшая цель на экране по расстоянию до тебя. Круг не ограничивает выбор.",
+		["Nearest target in any direction (360°). Respects the wall setting; ignores the circle."] = "Ближайшая цель в любом направлении (360°). Учитывает стены, но не круг.",
 		["Selects a head near the center and holds it inside the circle. Respects the wall setting."] = "Выбирает голову у центра и удерживает внутри круга. Учитывает настройку стен.",
 		["Acquires inside the circle, holds until death. Pauses behind walls unless they are ignored."] = "Захват в круге, удержание до смерти. За стеной пауза, если стены не игнорируются.",
 		["CIRCLE RADIUS"] = "РАДИУС КРУГА",
@@ -96,7 +102,7 @@ local i18n = {
 		["ENEMIES ONLY"] = "ТОЛЬКО ПРОТИВНИКИ",
 		["IGNORE WALLS"] = "ИГНОРИРОВАТЬ СТЕНЫ",
 		["TURN CHARACTER"] = "ПОВОРОТ ПЕРСОНАЖА",
-		["SHOW AIM BUTTON"] = "КНОПКА AIM НА ЭКРАНЕ",
+		["SHOW AIM BUTTON"] = "КНОПКА НАВЕДЕНИЯ",
 		["Outline and soft player fill"] = "Подсветка силуэта и мягкая заливка",
 		["HIGHLIGHT COLOR"] = "ЦВЕТ ПОДСВЕТКИ",
 		["TRANSPARENCY"] = "ПРОЗРАЧНОСТЬ",
@@ -158,7 +164,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "ui-languages-1")
+gui:SetAttribute("ClientBuild", "rivals-360-movement-1")
 gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -2203,7 +2209,7 @@ end)
 --============================================================
 local function setupRivalsPage()
 	local rivals = {
-		Aim = false, ESP = false, Tracers = false,
+		Aim = false, ESP = false, Tracers = false, Noclip = false, InfiniteJump = false,
 		Radius = 120, AimColor = Color3.fromRGB(150, 105, 255),
 		ESPColor = Color3.fromRGB(255, 70, 82), FillTransparency = 0.6,
 		TracerColor = Color3.fromRGB(70, 190, 255), Thickness = 2,
@@ -2327,8 +2333,8 @@ local function setupRivalsPage()
 			if model and head and isEnemy(other) then
 				local distance: number? = nil
 				if rivals.TargetMode == "Nearest" then
-					local point, onScreen = camera:WorldToViewportPoint(head.Position)
-					if onScreen and point.Z > 0 then distance = ((root or head).Position - origin).Magnitude end
+					-- Distance in the world, independent of camera direction and FOV.
+					distance = ((root or head).Position - origin).Magnitude
 				else
 					distance = screenDistance(camera, head.Position)
 				end
@@ -2341,6 +2347,63 @@ local function setupRivalsPage()
 		return best
 	end
 	-- RIVALS TARGET ADAPTER END
+
+	local originalCollisions: {[BasePart]: boolean} = {}
+	local noclipCharacter: Model? = nil
+	local lastJumpAt = -math.huge
+	local function restoreCollisions()
+		for part, canCollide in pairs(originalCollisions) do
+			part.CanCollide = canCollide
+			originalCollisions[part] = nil
+		end
+		noclipCharacter = nil
+	end
+
+	local function syncNoclip()
+		local character = player.Character
+		if stopped or not rivals.Noclip or not character or not isAlive(character) then
+			restoreCollisions()
+			return
+		end
+		if noclipCharacter ~= character then
+			restoreCollisions()
+			noclipCharacter = character
+		end
+		-- Restore detached parts; remember each new part's original collision flag.
+		for part, canCollide in pairs(originalCollisions) do
+			if not part:IsDescendantOf(character) then
+				part.CanCollide = canCollide
+				originalCollisions[part] = nil
+			end
+		end
+		for _, part in ipairs(character:GetDescendants()) do
+			if part:IsA("BasePart") then
+				if originalCollisions[part] == nil then originalCollisions[part] = part.CanCollide end
+				part.CanCollide = false
+			end
+		end
+	end
+
+	local function onJumpRequest()
+		if stopped or not rivals.InfiniteJump or panel.Visible or UserInputService:GetFocusedTextBox() then return end
+		local character = player.Character
+		if not character or not isAlive(character) then return end
+		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+		local root = character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or not root or not root:IsA("BasePart") or root.Anchored
+			or humanoid.SeatPart or humanoid.PlatformStand then return end
+		local now = os.clock()
+		if now - lastJumpAt < 0.12 then return end
+		local speed = if humanoid.UseJumpPower then humanoid.JumpPower
+			else math.sqrt(2 * math.max(workspace.Gravity, 0) * math.max(humanoid.JumpHeight, 0))
+		if speed <= 0 then return end
+		lastJumpAt = now
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		-- A repeated request while already jumping still needs a fresh impulse.
+		-- Preserve horizontal motion and the game's jump strength settings.
+		local velocity = root.AssemblyLinearVelocity
+		root.AssemblyLinearVelocity = Vector3.new(velocity.X, speed, velocity.Z)
+	end
 
 	local function destroyVisual(other: Player)
 		local visual = visuals[other]
@@ -2382,6 +2445,11 @@ local function setupRivalsPage()
 	quickButton.Name = "RivalsAimQuickToggle"
 	i18n.Text(quickButton, "AIM")
 	quickButton.TextSize = 14
+	quickButton.TextScaled = true
+	local quickTextSize = Instance.new("UITextSizeConstraint")
+	quickTextSize.MinTextSize = 8
+	quickTextSize.MaxTextSize = 14
+	quickTextSize.Parent = quickButton
 	quickButton.Visible = false
 	quickButton.Parent = gui
 	local quickOutline = quickButton:FindFirstChildWhichIsA("UIStroke")
@@ -2437,6 +2505,10 @@ local function setupRivalsPage()
 		gui:SetAttribute("RivalsESPEnabled", rivals.ESP)
 		gui:SetAttribute("RivalsTracersEnabled", rivals.Tracers)
 		gui:SetAttribute("RivalsIgnoreWalls", rivals.IgnoreWalls)
+		gui:SetAttribute("RivalsNoclipEnabled", rivals.Noclip)
+		gui:SetAttribute("RivalsInfiniteJumpEnabled", rivals.InfiniteJump)
+		syncNoclip()
+		if not rivals.InfiniteJump then lastJumpAt = -math.huge end
 		circle.Visible = rivals.Aim and rivals.TargetMode ~= "Nearest"
 		quickButton.Visible = rivals.ShowAimButton
 		quickButton.TextColor3 = if rivals.Aim then Color3.fromRGB(70, 235, 135) else COLORS.white
@@ -2497,6 +2569,11 @@ local function setupRivalsPage()
 		titleLabel.Position = UDim2.fromOffset(18, 10)
 		titleLabel.Size = UDim2.new(1, -30, 0, 25)
 		titleLabel.TextSize = 18
+		titleLabel.TextScaled = true
+		local titleLimit = Instance.new("UITextSizeConstraint")
+		titleLimit.MinTextSize = 10
+		titleLimit.MaxTextSize = 18
+		titleLimit.Parent = titleLabel
 		titleLabel.TextColor3 = COLORS.text
 		local description = label(open, descriptionText, 35)
 		description.Position = UDim2.fromOffset(18, 35)
@@ -2540,6 +2617,11 @@ local function setupRivalsPage()
 		local record = {Card = card, Settings = settings, Height = height, Expanded = false, Category = category}
 		table.insert(cards, record)
 		open.Activated:Connect(function()
+			if height == 0 then
+				config[key] = not config[key]
+				refreshEnabled()
+				return
+			end
 			local expand = not record.Expanded
 			for _, entry in ipairs(cards) do
 				entry.Expanded = entry == record and expand
@@ -2716,7 +2798,7 @@ local function setupRivalsPage()
 	modeHelp.TextWrapped = true
 	modeHelp.Font = Enum.Font.GothamMedium
 	local targetModes = {
-		{Key = "Nearest", Text = "Nearest", Help = "Nearest on-screen target by distance to you. The circle does not limit selection."},
+		{Key = "Nearest", Text = "Nearest", Help = "Nearest target in any direction (360°). Respects the wall setting; ignores the circle."},
 		{Key = "Circle", Text = "In circle", Help = "Selects a head near the center and holds it inside the circle. Respects the wall setting."},
 		{Key = "Lock", Text = "Until death", Help = "Acquires inside the circle, holds until death. Pauses behind walls unless they are ignored."},
 	}
@@ -2768,6 +2850,8 @@ local function setupRivalsPage()
 	local tracerSettings = makeCard("Tracers", "TRACERS", "Direction lines to players", "Visuals", 3, 120)
 	palette(tracerSettings, 10, "TracerColor", "LINE COLOR")
 	slider(tracerSettings, 72, "Thickness", "THICKNESS", 1, 6, 0.5)
+	makeCard("Noclip", "NOCLIP", "Walk through walls", "Other", 2, 0)
+	makeCard("InfiniteJump", "INFINITE JUMP", "Jump again while in the air", "Other", 3, 0)
 
 	local categoryBar = Instance.new("Frame")
 	categoryBar.Name = "RivalsCategoryBar"
@@ -2810,7 +2894,7 @@ local function setupRivalsPage()
 			entry.Settings.Visible = false
 			entry.Card.Size = UDim2.new(1, -10, 0, 68)
 		end
-		otherEmpty.Visible = name == "Other"
+		otherEmpty.Visible = false
 		for category, entry in pairs(categoryButtons) do
 			local active = category == name
 			entry.Button.BackgroundTransparency = if active then 0.38 else 1
@@ -2909,12 +2993,20 @@ local function setupRivalsPage()
 		if lockedTarget and lockedTarget.Owner == other then lockedTarget = nil end
 		destroyVisual(other)
 	end))
-	table.insert(connections, player.CharacterRemoving:Connect(function() lockedTarget = nil releaseBody() end))
+	table.insert(connections, player.CharacterRemoving:Connect(function()
+		lockedTarget = nil
+		releaseBody()
+		restoreCollisions()
+		lastJumpAt = -math.huge
+	end))
+	table.insert(connections, RunService.PreSimulation:Connect(syncNoclip))
+	table.insert(connections, UserInputService.JumpRequest:Connect(onJumpRequest))
 	gui.Destroying:Connect(function()
 		stopped = true
 		RunService:UnbindFromRenderStep(binding)
 		for _, connection in ipairs(connections) do connection:Disconnect() end
 		releaseBody()
+		restoreCollisions()
 		for other in pairs(visuals) do destroyVisual(other) end
 		overlay:Destroy()
 		visualFolder:Destroy()
