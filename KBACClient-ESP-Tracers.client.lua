@@ -74,6 +74,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
+gui:SetAttribute("AimBuild", "rig-sync-9")
 
 local blur = Instance.new("BlurEffect")
 blur.Name = "KBACClientBlur"
@@ -567,6 +568,7 @@ local trackedLifecycleConnections: {[Model]: {RBXScriptConnection}} = {}
 local charactersFolder: Instance? = nil
 local cleanedCharactersFolder: Instance? = nil
 local localGameCharacter: Model? = nil
+local localAimModels: {Model} = {}
 
 local function belongsToPlayer(model: Model): boolean
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
@@ -767,6 +769,7 @@ local function trackModel(model: Model)
 end
 
 local function scanCharacters()
+	table.clear(localAimModels)
 	charactersFolder = workspace:FindFirstChild("Characters")
 	if not charactersFolder then
 		local staleModels = {}
@@ -797,6 +800,7 @@ local function scanCharacters()
 					or descendant:FindFirstChild("Root") or descendant.PrimaryPart
 					or descendant:FindFirstChild("LowerTorso") or descendant:FindFirstChild("Torso")
 				if directRoot and directRoot:IsA("BasePart") then
+					table.insert(localAimModels, descendant)
 					local score = if descendant.Name == player.Name then 2 else 0
 					for _, bodyPart in ipairs(descendant:GetDescendants()) do
 						if bodyPart:IsA("BasePart") and bodyPart.Name ~= "HumanoidRootPart" and bodyPart.Transparency < 0.95 then
@@ -1339,6 +1343,7 @@ local aimColor = Color3.fromRGB(255, 70, 82)
 local aimCharacterState = {
 	Humanoids = {} :: {[Humanoid]: boolean},
 	Controllers = {} :: {[ControllerManager]: Vector3},
+	NextReportAt = 0,
 }
 local savedAimCamera: Camera? = nil
 local savedAimCameraType = Enum.CameraType.Custom
@@ -1429,7 +1434,10 @@ local aimDescription = tracerDescription:Clone()
 aimDescription.Text = "Target lock; move mouse to release"
 aimDescription.Parent = aimOpen
 local function setAimStatus(message: string)
-	if aimDescription.Text ~= message then aimDescription.Text = message end
+	if aimDescription.Text ~= message then
+		aimDescription.Text = message
+		gui:SetAttribute("AimStatus", message)
+	end
 end
 
 local aimToggle = tracerToggle:Clone()
@@ -1835,41 +1843,70 @@ type LocalAimRig = {
 	Controller: ControllerManager?,
 }
 
-local function getLocalAimRigs(): {LocalAimRig}
+local function getLocalAimRigs(): ({LocalAimRig}, BasePart?)
 	local rigs: {LocalAimRig} = {}
 	local function addCharacter(character: Model?)
 		if not character or not character:IsDescendantOf(workspace) then return end
-		-- A parent container is not a separate character rig.
 		if player.Character and character ~= player.Character and character:IsAncestorOf(player.Character) then return end
-		local humanoid = character:FindFirstChildWhichIsA("Humanoid", true)
-		local controller = character:FindFirstChildWhichIsA("ControllerManager", true)
+
+		-- Do not mistake a nested avatar's humanoid/root for its parent's controller.
+		local function isOwned(instance: Instance): boolean
+			local ancestor = instance.Parent
+			while ancestor and ancestor ~= character do
+				if ancestor:IsA("Model") then return false end
+				ancestor = ancestor.Parent
+			end
+			return ancestor == character
+		end
+		local humanoid: Humanoid? = nil
+		local controller: ControllerManager? = nil
+		local parts: {[string]: BasePart} = {}
+		for _, descendant in ipairs(character:GetDescendants()) do
+			if isOwned(descendant) then
+				if descendant:IsA("Humanoid") then humanoid = descendant end
+				if descendant:IsA("ControllerManager") then controller = descendant end
+				if descendant:IsA("BasePart") then parts[descendant.Name] = descendant end
+			end
+		end
+		-- A weapon/accessory model under the character is not another avatar.
+		local ownerId = character:GetAttribute("UserId") or character:GetAttribute("PlayerUserId")
+		local namedOwner = string.lower(character.Name) == string.lower(player.Name)
+			or string.lower(character.Name) == string.lower(player.DisplayName) or ownerId == player.UserId
+		if character ~= player.Character and not humanoid and not controller and not namedOwner
+			and not (parts.Head and (parts.Torso or parts.UpperTorso or parts.LowerTorso)) then return end
 		local root: BasePart? = nil
 		if controller and controller.RootPart and controller.RootPart:IsDescendantOf(character) then
 			root = controller.RootPart
 		elseif humanoid and humanoid.RootPart and humanoid.RootPart:IsDescendantOf(character) then
 			root = humanoid.RootPart
 		else
-			root = getBodyPart(character, "HumanoidRootPart", "RootPart", "Root")
-				or character.PrimaryPart
-				or getBodyPart(character, "LowerTorso", "Torso", "UpperTorso")
+			root = parts.HumanoidRootPart or parts.RootPart or parts.Root or character.PrimaryPart
+				or parts.LowerTorso or parts.Torso or parts.UpperTorso
 		end
 		if not root then return end
 		for _, rig in ipairs(rigs) do
-			if rig.Root == root or rig.Character:IsAncestorOf(character) or character:IsAncestorOf(rig.Character) then return end
+			-- Nested models can have independent roots; only a shared root is a duplicate.
+			if rig.Root == root then return end
 		end
 		table.insert(rigs, {Root = root, Character = character, Humanoid = humanoid, Controller = controller})
 	end
 
-	-- Some games render a separate avatar while Player.Character owns movement.
-	-- Rotate both, retaining the visible avatar as the camera-follow anchor.
-	addCharacter(localGameCharacter)
 	addCharacter(player.Character)
-	if (not localGameCharacter or not localGameCharacter:IsDescendantOf(workspace)) and charactersFolder then
-		for _, descendant in ipairs(charactersFolder:GetDescendants()) do
-			if descendant:IsA("Model") and isLocalPlayerModel(descendant) then addCharacter(descendant) end
-		end
+	addCharacter(localGameCharacter)
+	for _, model in ipairs(localAimModels) do addCharacter(model) end
+	local followRoot: BasePart? = if rigs[1] then rigs[1].Root else nil
+	for _, rig in ipairs(rigs) do
+		if rig.Character == localGameCharacter then followRoot = rig.Root break end
 	end
-	return rigs
+	-- Parent pivots must be applied before independent nested avatars.
+	local function depth(model: Model): number
+		local count = 0
+		local ancestor: Instance? = model.Parent
+		while ancestor do count += 1 ancestor = ancestor.Parent end
+		return count
+	end
+	table.sort(rigs, function(a, b) return depth(a.Character) < depth(b.Character) end)
+	return rigs, followRoot
 end
 
 local function faceAimCharacters(rigs: {LocalAimRig}, lookDirection: Vector3)
@@ -1878,6 +1915,32 @@ local function faceAimCharacters(rigs: {LocalAimRig}, lookDirection: Vector3)
 	local direction = horizontalDirection.Unit
 	local activeHumanoids: {[Humanoid]: boolean} = {}
 	local activeControllers: {[ControllerManager]: boolean} = {}
+	-- Keep a local report for troubleshooting; this does not send any data.
+	if os.clock() >= aimCharacterState.NextReportAt then
+		aimCharacterState.NextReportAt = os.clock() + 1
+		local lines = {"Build: rig-sync-9", "Local rigs: " .. #rigs}
+		local function angle(part: BasePart): number
+			local facing = Vector3.new(part.CFrame.LookVector.X, 0, part.CFrame.LookVector.Z)
+			if facing.Magnitude < 0.001 then return -1 end
+			return math.deg(math.acos(math.clamp(facing.Unit:Dot(direction), -1, 1)))
+		end
+		for _, rig in ipairs(rigs) do
+			local body = getBodyPart(rig.Character, "UpperTorso", "Torso", "LowerTorso", "Head")
+			table.insert(lines, string.format("%s | root=%s | anchored=%s | humanoid=%s | controller=%s | before-write root=%.1fdeg body=%.1fdeg",
+				rig.Character:GetFullName(), rig.Root:GetFullName(), tostring(rig.Root.Anchored),
+				tostring(rig.Humanoid ~= nil), tostring(rig.Controller ~= nil), angle(rig.Root), if body then angle(body) else -1))
+		end
+		gui:SetAttribute("AimBodyReport", table.concat(lines, "\n"))
+	end
+	local poses: {[BasePart]: {Position: Vector3, PivotFromRoot: CFrame}} = {}
+	for _, rig in ipairs(rigs) do
+		if rig.Root:IsDescendantOf(rig.Character) and rig.Character:IsDescendantOf(workspace) then
+			poses[rig.Root] = {
+				Position = rig.Root.Position,
+				PivotFromRoot = rig.Root.CFrame:ToObjectSpace(rig.Character:GetPivot()),
+			}
+		end
+	end
 	for _, rig in ipairs(rigs) do
 		local root, character = rig.Root, rig.Character
 		if not root:IsDescendantOf(character) or not character:IsDescendantOf(workspace) then continue end
@@ -1896,9 +1959,11 @@ local function faceAimCharacters(rigs: {LocalAimRig}, lookDirection: Vector3)
 			end
 			controller.FacingDirection = direction
 		end
-		local desiredRoot = CFrame.lookAt(root.Position, root.Position + direction)
-		local pivotFromRoot = root.CFrame:ToObjectSpace(character:GetPivot())
-		character:PivotTo(desiredRoot * pivotFromRoot)
+		-- Use the captured position so rotating a parent cannot move a nested rig.
+		local pose = poses[root]
+		if not pose then continue end
+		local desiredRoot = CFrame.lookAt(pose.Position, pose.Position + direction)
+		character:PivotTo(desiredRoot * pose.PivotFromRoot)
 		root.CFrame = desiredRoot
 		root.AssemblyAngularVelocity = Vector3.zero
 	end
@@ -2009,8 +2074,7 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 		end
 	end
 
-	local rigs = getLocalAimRigs()
-	local root = if rigs[1] then rigs[1].Root else nil
+	local rigs, root = getLocalAimRigs()
 	local hasRoot = root ~= nil and root.Parent ~= nil
 	if not savedAimCamera then
 		savedAimCamera = camera
@@ -2046,15 +2110,15 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 	setAimStatus(if hasRoot then "AIM: target locked" else "AIM: camera locked; character missing")
 end)
 
-local function updateAimCharacterRotation()
+function aimCharacterState.UpdateRotation()
 	if not aimEnabled or not lockedAimModel or not trackedHighlights[lockedAimModel] then return end
 	local head = getAimHeadPart(lockedAimModel)
 	local camera = workspace.CurrentCamera
 	if not head or not camera or not savedAimCamera then return end
 	faceAimCharacters(getLocalAimRigs(), camera.CFrame.LookVector)
 end
-local aimSimulationConnection = RunService.PreSimulation:Connect(updateAimCharacterRotation)
-local aimPostSimulationConnection = RunService.PostSimulation:Connect(updateAimCharacterRotation)
+local aimSimulationConnection = RunService.PreSimulation:Connect(aimCharacterState.UpdateRotation)
+local aimPostSimulationConnection = RunService.PostSimulation:Connect(aimCharacterState.UpdateRotation)
 
 RunService.RenderStepped:Connect(function()
 	if not espEnabled and not tracerEnabled then return end
