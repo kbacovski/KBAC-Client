@@ -56,6 +56,30 @@ local i18n = {
 	Bindings = {} :: {[Instance]: string},
 	OnChanged = nil :: (() -> ())?,
 	Russian = {
+		["SPEED"] = "СКОРОСТЬ",
+		["Adjust walking speed"] = "Настройка скорости передвижения",
+		["WALK SPEED"] = "СКОРОСТЬ ХОДЬБЫ",
+		["FLIGHT"] = "ПОЛЁТ",
+		["Fly with movement controls and up / down"] = "Полёт с управлением вверх и вниз",
+		["FLIGHT SPEED"] = "СКОРОСТЬ ПОЛЁТА",
+		["Move normally. Space / E: up. Ctrl / Q: down. Touch: arrow buttons."] = "Обычное движение. Пробел — вверх, левый Контрол — вниз. На телефоне — стрелки.",
+		["TELEPORT"] = "ТЕЛЕПОРТ",
+		["Move next to another player"] = "Перемещение к другому игроку",
+		["TELEPORT MODE"] = "РЕЖИМ ТЕЛЕПОРТА",
+		["TELEPORT NOW"] = "ТЕЛЕПОРТИРОВАТЬСЯ",
+		["Random"] = "Случайный",
+		["Choose player"] = "Выбрать игрока",
+		["Nearest player in any direction"] = "Ближайший игрок в любом направлении",
+		["A random available player"] = "Случайный доступный игрок",
+		["No available players"] = "Нет доступных игроков",
+		["Choose a player first"] = "Сначала выбери игрока",
+		["Selected player unavailable"] = "Выбранный игрок недоступен",
+		["Character unavailable"] = "Персонаж недоступен",
+		["Teleported"] = "Телепортация выполнена",
+		["SHOW ON SCREEN"] = "КНОПКА НА ЭКРАНЕ",
+		["OPEN"] = "ОТКРЫТЬ",
+		["JUMP"] = "ПРЫЖКИ",
+
 		["KBAC CLIENT"] = "КЛИЕНТ КБАК",
 		["K"] = "К",
 		["RIVALS"] = "РИВАЛС",
@@ -170,7 +194,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "ui-snow-bounds-3")
+gui:SetAttribute("ClientBuild", "other-movement-tools-1")
 gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -2329,6 +2353,194 @@ local visualRenderConnection = RunService.RenderStepped:Connect(function()
 	end
 end)
 
+-- Shared movement state is used by OTHER, RIVALS and floating buttons.
+local function setupMovement()
+	local api = {
+		Config = {Speed = false, SpeedValue = 32, Flight = false, FlightSpeed = 60, Noclip = false, InfiniteJump = false},
+		Listeners = {}, Vertical = 0, TeleportMode = "Nearest", SelectedPlayer = nil :: Player?,
+	}
+	local config: any = api.Config
+	local connections = {}
+	local stopped = false
+	local retired: Model? = nil
+	local collisions: {[BasePart]: boolean} = {}
+	local collisionModel: Model? = nil
+	local speedHumanoid: Humanoid? = nil
+	local savedSpeed = 16
+	local flight: any = nil
+	local lastJump = -math.huge
+	local random = Random.new()
+	function api.Alive(model: Model?): boolean
+		if not model or not model:IsDescendantOf(workspace) then return false end
+		if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true
+			or model:GetAttribute("Alive") == false or model:GetAttribute("IsAlive") == false then return false end
+		local health = model:GetAttribute("Health")
+		if type(health) == "number" and health <= 0 then return false end
+		local human = model:FindFirstChildWhichIsA("Humanoid", true)
+		return not human or human.Health > 0
+	end
+	function api.Parts(owner: Player): (Model?, Humanoid?, BasePart?)
+		local model = owner.Character
+		if not api.Alive(model) or (owner == player and model == retired) then return nil, nil, nil end
+		local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or model:FindFirstChild("Torso")
+		return model, model:FindFirstChildWhichIsA("Humanoid"), if root and root:IsA("BasePart") then root else nil
+	end
+	local function restoreCollisions()
+		for part, original in pairs(collisions) do part.CanCollide = original collisions[part] = nil end
+		collisionModel = nil
+	end
+	local function restoreSpeed()
+		if speedHumanoid then speedHumanoid.WalkSpeed = savedSpeed speedHumanoid = nil end
+	end
+	local function stopFlight()
+		if not flight then return end
+		flight.Velocity:Destroy()
+		flight.Orientation:Destroy()
+		flight.Attachment:Destroy()
+		flight.Humanoid.PlatformStand = flight.PlatformStand
+		if flight.Root.Parent then flight.Root.AssemblyLinearVelocity = Vector3.zero end
+		flight = nil
+	end
+	function api.Notify()
+		for _, key in ipairs({"Speed", "Flight", "Noclip", "InfiniteJump"}) do gui:SetAttribute("Global" .. key .. "Enabled", config[key]) end
+		gui:SetAttribute("GlobalSpeedValue", config.SpeedValue)
+		gui:SetAttribute("GlobalFlightSpeed", config.FlightSpeed)
+		for _, callback in ipairs(api.Listeners) do callback() end
+	end
+	function api.Subscribe(callback)
+		table.insert(api.Listeners, callback)
+		callback()
+	end
+	function api.Step()
+		local model, humanoid, root = api.Parts(player)
+		if stopped then model, humanoid, root = nil, nil, nil end
+		if config.Noclip and model then
+			if collisionModel ~= model then restoreCollisions() collisionModel = model end
+			for part, original in pairs(collisions) do
+				if not part:IsDescendantOf(model) then part.CanCollide = original collisions[part] = nil end
+			end
+			for _, part in ipairs(model:GetDescendants()) do
+				if part:IsA("BasePart") then
+					if collisions[part] == nil then collisions[part] = part.CanCollide end
+					part.CanCollide = false
+				end
+			end
+		else restoreCollisions() end
+		if config.Speed and humanoid then
+			if speedHumanoid ~= humanoid then restoreSpeed() speedHumanoid = humanoid savedSpeed = humanoid.WalkSpeed end
+			humanoid.WalkSpeed = config.SpeedValue
+		else restoreSpeed() end
+		if not config.Flight or not humanoid or not root or root.Anchored or humanoid.SeatPart then
+			stopFlight()
+			return
+		end
+		if flight and (flight.Root ~= root or not flight.Velocity.Parent or not flight.Orientation.Parent or not flight.Attachment.Parent) then stopFlight() end
+		if not flight then
+			local attachment = Instance.new("Attachment")
+			attachment.Name = "KBACFlightAttachment" attachment.Parent = root
+			local velocity = Instance.new("LinearVelocity")
+			velocity.Name = "KBACFlightVelocity" velocity.Attachment0 = attachment
+			velocity.RelativeTo = Enum.ActuatorRelativeTo.World
+			velocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+			velocity.ForceLimitsEnabled = false velocity.VectorVelocity = Vector3.zero velocity.Parent = root
+			local orientation = Instance.new("AlignOrientation")
+			orientation.Name = "KBACFlightOrientation" orientation.Attachment0 = attachment
+			orientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+			orientation.MaxTorque = math.huge orientation.Responsiveness = 25 orientation.Parent = root
+			flight = {Root = root, Humanoid = humanoid, PlatformStand = humanoid.PlatformStand,
+				Attachment = attachment, Velocity = velocity, Orientation = orientation}
+		end
+		humanoid.PlatformStand = true
+		local direction = Vector3.zero
+		if not panel.Visible and not UserInputService:GetFocusedTextBox() then
+			local vertical = api.Vertical
+			if UserInputService:IsKeyDown(Enum.KeyCode.Space) or UserInputService:IsKeyDown(Enum.KeyCode.E) then vertical += 1 end
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.Q) then vertical -= 1 end
+			direction = humanoid.MoveDirection + Vector3.new(0, math.clamp(vertical, -1, 1), 0)
+			if direction.Magnitude > 1 then direction = direction.Unit end
+		end
+		flight.Velocity.VectorVelocity = direction * config.FlightSpeed
+		local camera = workspace.CurrentCamera
+		local look = if camera then camera.CFrame.LookVector else root.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 0.001 then flight.Orientation.CFrame = CFrame.lookAt(Vector3.zero, flat) end
+	end
+	function api.Set(key: string, value: any)
+		if stopped or config[key] == nil then return end
+		if key == "SpeedValue" or key == "FlightSpeed" then
+			if type(value) ~= "number" or value ~= value then return end
+			value = math.clamp(math.round(value), 1, 1000)
+		elseif type(value) ~= "boolean" then return end
+		config[key] = value
+		if not config.InfiniteJump then lastJump = -math.huge end
+		if not config.Flight then api.Vertical = 0 end
+		api.Step()
+		api.Notify()
+	end
+	function api.Targets(): {Player}
+		local targets = {}
+		for _, other in ipairs(Players:GetPlayers()) do
+			local _, _, root = api.Parts(other)
+			if other ~= player and root then table.insert(targets, other) end
+		end
+		table.sort(targets, function(a, b) return string.lower(a.Name) < string.lower(b.Name) end)
+		return targets
+	end
+	function api.Teleport(): string
+		local model, humanoid, root = api.Parts(player)
+		if not model or not root or root.Anchored or (humanoid and humanoid.SeatPart) then return "Character unavailable" end
+		local targets = api.Targets()
+		local target: Player? = nil
+		if api.TeleportMode == "Selected" then
+			if not api.SelectedPlayer then return "Choose a player first" end
+			if not table.find(targets, api.SelectedPlayer) then return "Selected player unavailable" end
+			target = api.SelectedPlayer
+		elseif #targets == 0 then return "No available players"
+		elseif api.TeleportMode == "Random" then target = targets[random:NextInteger(1, #targets)]
+		else
+			local distance = math.huge
+			for _, other in ipairs(targets) do
+				local _, _, otherRoot = api.Parts(other)
+				local nextDistance = (otherRoot.Position - root.Position).Magnitude
+				if nextDistance < distance then distance, target = nextDistance, other end
+			end
+		end
+		local _, _, targetRoot = api.Parts(target :: Player)
+		if not targetRoot then return "Selected player unavailable" end
+		-- Offset beside the target, preserving our character's orientation and pivot offset.
+		local destination = targetRoot.Position + targetRoot.CFrame.RightVector * 4 + Vector3.new(0, 2, 0)
+		model:PivotTo(model:GetPivot() + (destination - root.Position))
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+		return "Teleported"
+	end
+	table.insert(connections, RunService.PreSimulation:Connect(api.Step))
+	table.insert(connections, UserInputService.JumpRequest:Connect(function()
+		if stopped or not config.InfiniteJump or config.Flight or panel.Visible or UserInputService:GetFocusedTextBox() then return end
+		local _, humanoid, root = api.Parts(player)
+		if not humanoid or not root or root.Anchored or humanoid.SeatPart or humanoid.PlatformStand then return end
+		local now = os.clock()
+		if now - lastJump < 0.12 then return end
+		local speed = if humanoid.UseJumpPower then humanoid.JumpPower else math.sqrt(2 * math.max(workspace.Gravity, 0) * math.max(humanoid.JumpHeight, 0))
+		if speed <= 0 then return end
+		lastJump = now
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		local velocity = root.AssemblyLinearVelocity
+		root.AssemblyLinearVelocity = Vector3.new(velocity.X, speed, velocity.Z)
+	end))
+	table.insert(connections, player.CharacterRemoving:Connect(function(model)
+		retired = model stopFlight() restoreSpeed() restoreCollisions() api.Vertical = 0 lastJump = -math.huge
+	end))
+	gui.Destroying:Connect(function()
+		stopped = true
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		stopFlight() restoreSpeed() restoreCollisions() table.clear(api.Listeners)
+	end)
+	return api
+end
+local movement = setupMovement()
+-- END SHARED MOVEMENT
+
 --============================================================
 -- RIVALS: separate controls and standard Player.Character adapter.
 --============================================================
@@ -2473,63 +2685,6 @@ local function setupRivalsPage()
 	end
 	-- RIVALS TARGET ADAPTER END
 
-	local originalCollisions: {[BasePart]: boolean} = {}
-	local noclipCharacter: Model? = nil
-	local lastJumpAt = -math.huge
-	local function restoreCollisions()
-		for part, canCollide in pairs(originalCollisions) do
-			part.CanCollide = canCollide
-			originalCollisions[part] = nil
-		end
-		noclipCharacter = nil
-	end
-
-	local function syncNoclip()
-		local character = player.Character
-		if stopped or not rivals.Noclip or not character or not isAlive(character) then
-			restoreCollisions()
-			return
-		end
-		if noclipCharacter ~= character then
-			restoreCollisions()
-			noclipCharacter = character
-		end
-		-- Restore detached parts; remember each new part's original collision flag.
-		for part, canCollide in pairs(originalCollisions) do
-			if not part:IsDescendantOf(character) then
-				part.CanCollide = canCollide
-				originalCollisions[part] = nil
-			end
-		end
-		for _, part in ipairs(character:GetDescendants()) do
-			if part:IsA("BasePart") then
-				if originalCollisions[part] == nil then originalCollisions[part] = part.CanCollide end
-				part.CanCollide = false
-			end
-		end
-	end
-
-	local function onJumpRequest()
-		if stopped or not rivals.InfiniteJump or panel.Visible or UserInputService:GetFocusedTextBox() then return end
-		local character = player.Character
-		if not character or not isAlive(character) then return end
-		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
-		local root = character:FindFirstChild("HumanoidRootPart")
-		if not humanoid or not root or not root:IsA("BasePart") or root.Anchored
-			or humanoid.SeatPart or humanoid.PlatformStand then return end
-		local now = os.clock()
-		if now - lastJumpAt < 0.12 then return end
-		local speed = if humanoid.UseJumpPower then humanoid.JumpPower
-			else math.sqrt(2 * math.max(workspace.Gravity, 0) * math.max(humanoid.JumpHeight, 0))
-		if speed <= 0 then return end
-		lastJumpAt = now
-		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-		-- A repeated request while already jumping still needs a fresh impulse.
-		-- Preserve horizontal motion and the game's jump strength settings.
-		local velocity = root.AssemblyLinearVelocity
-		root.AssemblyLinearVelocity = Vector3.new(velocity.X, speed, velocity.Z)
-	end
-
 	local function destroyVisual(other: Player)
 		local visual = visuals[other]
 		if not visual then return end
@@ -2632,8 +2787,6 @@ local function setupRivalsPage()
 		gui:SetAttribute("RivalsIgnoreWalls", rivals.IgnoreWalls)
 		gui:SetAttribute("RivalsNoclipEnabled", rivals.Noclip)
 		gui:SetAttribute("RivalsInfiniteJumpEnabled", rivals.InfiniteJump)
-		syncNoclip()
-		if not rivals.InfiniteJump then lastJumpAt = -math.huge end
 		circle.Visible = rivals.Aim and rivals.TargetMode ~= "Nearest"
 		quickButton.Visible = rivals.ShowAimButton
 		quickButton.TextColor3 = if rivals.Aim then Color3.fromRGB(70, 235, 135) else COLORS.white
@@ -2653,7 +2806,11 @@ local function setupRivalsPage()
 		refreshEnabled()
 	end)
 
-	-- Shared card builder keeps all three outlines, switches and palettes consistent.
+	local function setCardEnabled(key: string)
+		if key == "Noclip" or key == "InfiniteJump" then movement.Set(key, not config[key])
+		else config[key] = not config[key] refreshEnabled() end
+	end
+	-- Shared card builder keeps all outlines, switches and palettes consistent.
 	local function label(parent: Instance, text: string, y: number): TextLabel
 		local item = Instance.new("TextLabel")
 		item.Position = UDim2.fromOffset(12, y)
@@ -2743,8 +2900,7 @@ local function setupRivalsPage()
 		table.insert(cards, record)
 		open.Activated:Connect(function()
 			if height == 0 then
-				config[key] = not config[key]
-				refreshEnabled()
+				setCardEnabled(key)
 				return
 			end
 			local expand = not record.Expanded
@@ -2765,8 +2921,7 @@ local function setupRivalsPage()
 			TweenService:Create(knob, quickTween, {Position = UDim2.fromOffset(if enabled then 25 else 3, 3)}):Play()
 		end
 		toggle.Activated:Connect(function()
-			config[key] = not config[key]
-			refreshEnabled()
+			setCardEnabled(key)
 		end)
 		return settings
 	end
@@ -3121,22 +3276,22 @@ local function setupRivalsPage()
 	table.insert(connections, player.CharacterRemoving:Connect(function()
 		lockedTarget = nil
 		releaseBody()
-		restoreCollisions()
-		lastJumpAt = -math.huge
 	end))
-	table.insert(connections, RunService.PreSimulation:Connect(syncNoclip))
-	table.insert(connections, UserInputService.JumpRequest:Connect(onJumpRequest))
 	gui.Destroying:Connect(function()
 		stopped = true
 		RunService:UnbindFromRenderStep(binding)
 		for _, connection in ipairs(connections) do connection:Disconnect() end
 		releaseBody()
-		restoreCollisions()
 		for other in pairs(visuals) do destroyVisual(other) end
 		overlay:Destroy()
 		visualFolder:Destroy()
 	end)
 	RunService:BindToRenderStep(binding, Enum.RenderPriority.Last.Value + 1, render)
+	movement.Subscribe(function()
+		rivals.Noclip = movement.Config.Noclip
+		rivals.InfiniteJump = movement.Config.InfiniteJump
+		refreshEnabled()
+	end)
 	refreshEnabled()
 	switchTab("RIVALS")
 end
@@ -3212,6 +3367,268 @@ local function setupLanguagePage()
 	refresh()
 end
 setupLanguagePage()
+
+local function setupOtherTools()
+	local modules = pages.OTHER.Modules
+	local connections = {}
+	local records = {}
+	local expanded = nil
+	local toastVersion = 0
+	local toast = Instance.new("TextLabel")
+	toast.Name = "ToolsStatus" toast.AnchorPoint = Vector2.new(0.5, 1)
+	toast.Position = UDim2.new(0.5, 0, 1, -24) toast.Size = UDim2.new(1, -32, 0, 42)
+	toast.BackgroundColor3 = Color3.fromRGB(16, 20, 28) toast.BackgroundTransparency = 0.12
+	toast.TextColor3 = COLORS.text toast.TextSize = 14 toast.Font = Enum.Font.GothamMedium
+	toast.TextWrapped = true toast.Visible = false toast.ZIndex = 80 toast.Parent = gui
+	i18n.Text(toast, "") corner(toast, 12)
+	local function notify(message: string)
+		toastVersion += 1
+		local version = toastVersion
+		i18n.Text(toast, message) toast.Visible = true
+		task.delay(3, function() if gui.Parent and toastVersion == version then toast.Visible = false end end)
+	end
+	local function label(parent, name, text, y)
+		local item = Instance.new("TextLabel")
+		item.Name = name item.Position = UDim2.fromOffset(12, y) item.Size = UDim2.new(1, -24, 0, 22)
+		item.BackgroundTransparency = 1 item.TextColor3 = COLORS.muted item.TextSize = 11
+		item.Font = Enum.Font.GothamMedium item.TextXAlignment = Enum.TextXAlignment.Left
+		item.ZIndex = 21 item.Parent = parent i18n.Text(item, text)
+		return item
+	end
+	local function button(parent, name, text, position, size)
+		local item = Instance.new("TextButton")
+		item.Name = name item.Position = position item.Size = size
+		item.BackgroundColor3 = Color3.fromRGB(13, 16, 22) item.BackgroundTransparency = 0.35
+		item.BorderSizePixel = 0 item.TextColor3 = COLORS.muted item.TextSize = 11
+		item.Font = Enum.Font.GothamSemibold item.AutoButtonColor = false item.ZIndex = 22
+		item.Parent = parent i18n.Text(item, text) corner(item, 10) stroke(item, 0.6)
+		return item
+	end
+	local function paint(item, active)
+		item.BackgroundColor3 = if active then Color3.fromRGB(23, 94, 64) else Color3.fromRGB(13, 16, 22)
+		item.TextColor3 = if active then Color3.fromRGB(111, 255, 171) else COLORS.muted
+		local outline = item:FindFirstChildWhichIsA("UIStroke")
+		if outline then outline.Color = if active then Color3.fromRGB(70, 235, 135) else COLORS.white end
+	end
+	local function placeQuickButtons()
+		local camera = workspace.CurrentCamera
+		if not camera then return end
+		local size = if camera.ViewportSize.X < 500 then 52 else 58
+		local rows = math.max(1, math.floor((camera.ViewportSize.Y - 24) / (size + 8)))
+		local index = 0
+		for _, record in ipairs(records) do
+			local quick = record.Quick
+			quick.Visible = record.Pinned
+			if record.Pinned then
+				quick.Size = UDim2.fromOffset(size, size)
+				local x, y = quick.Position.X.Offset, quick.Position.Y.Offset
+				if not record.Moved then
+					x = camera.ViewportSize.X - size - 12 - math.floor(index / rows) * (size + 8)
+					y = 12 + (index % rows) * (size + 8)
+				end
+				quick.Position = UDim2.fromOffset(math.clamp(x, 6, math.max(6, camera.ViewportSize.X - size - 6)),
+					math.clamp(y, 6, math.max(6, camera.ViewportSize.Y - size - 6)))
+				index += 1
+			end
+		end
+	end
+	local function activate(key)
+		if key == "Teleport" then notify(movement.Teleport())
+		else movement.Set(key, not (movement.Config :: any)[key]) end
+	end
+	local function addCard(key, title, description, order, height, quickText)
+		local card = Instance.new("Frame")
+		card.Name = "Global" .. key .. "Card" card.Size = UDim2.new(1, -10, 0, 68)
+		card.BackgroundColor3 = Color3.fromRGB(44, 54, 71) card.BackgroundTransparency = 0.5
+		card.BorderSizePixel = 0 card.ClipsDescendants = true card.LayoutOrder = order card.ZIndex = 17 card.Parent = modules
+		corner(card, 18) stroke(card, 0.62, 1)
+		local open = button(card, "OpenSettings", "", UDim2.fromOffset(0, 0), UDim2.new(1, -80, 0, 68))
+		open.BackgroundTransparency = 1 open:FindFirstChildWhichIsA("UIStroke").Transparency = 1
+		local titleLabel = label(open, "Title", title, 9) titleLabel.TextSize = 18 titleLabel.TextColor3 = COLORS.text
+		titleLabel.Font = Enum.Font.GothamBold titleLabel.TextScaled = true
+		local limit = Instance.new("UITextSizeConstraint") limit.MinTextSize = 10 limit.MaxTextSize = 18 limit.Parent = titleLabel
+		local subtitle = label(open, "Description", description, 34) subtitle.TextTruncate = Enum.TextTruncate.AtEnd
+		local toggle = button(card, "Toggle", if key == "Teleport" then "OPEN" else "OFF", UDim2.new(1, -70, 0, 19), UDim2.fromOffset(56, 30))
+		local settings = Instance.new("Frame")
+		settings.Name = "Settings" settings.Position = UDim2.fromOffset(12, 76) settings.Size = UDim2.new(1, -24, 0, height)
+		settings.BackgroundColor3 = Color3.fromRGB(25, 32, 46) settings.BackgroundTransparency = 0.54
+		settings.BorderSizePixel = 0 settings.Visible = false settings.ZIndex = 18 settings.Parent = card
+		corner(settings, 15) stroke(settings, 0.58)
+		local quick = openButton:Clone()
+		quick.Name = "Global" .. key .. "QuickToggle" quick.Visible = false quick.TextScaled = true quick.TextWrapped = true
+		quick.ZIndex = 60 quick.Parent = gui i18n.Text(quick, quickText)
+		local textLimit = Instance.new("UITextSizeConstraint") textLimit.MinTextSize = 8 textLimit.MaxTextSize = 13 textLimit.Parent = quick
+		local record = {Key = key, Card = card, Settings = settings, Height = height, Quick = quick, Toggle = toggle,
+			Pinned = false, Moved = false, Dragging = false, Dragged = false, Input = nil}
+		table.insert(records, record)
+		local function expand()
+			expanded = if expanded == record then nil else record
+			for _, entry in ipairs(records) do
+				entry.Settings.Visible = expanded == entry
+				entry.Card.Size = UDim2.new(1, -10, 0, if expanded == entry then entry.Height + 88 else 68)
+			end
+			if expanded then modules.CanvasPosition = Vector2.new(0, 182 + (order - 2) * 76) end
+		end
+		open.Activated:Connect(expand)
+		toggle.Activated:Connect(if key == "Teleport" then expand else function() activate(key) end)
+		quick.InputBegan:Connect(function(input)
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+			record.Input = input record.Dragging = true record.Dragged = false
+			record.Start = Vector2.new(input.Position.X, input.Position.Y)
+			record.Origin = Vector2.new(quick.Position.X.Offset, quick.Position.Y.Offset)
+		end)
+		table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+			if not record.Dragging then return end
+			local mouse = record.Input.UserInputType == Enum.UserInputType.MouseButton1
+			if not ((mouse and input.UserInputType == Enum.UserInputType.MouseMovement) or input == record.Input) then return end
+			local delta = Vector2.new(input.Position.X, input.Position.Y) - record.Start
+			if delta.Magnitude <= 6 and not record.Dragged then return end
+			record.Moved = true record.Dragged = true
+			quick.Position = UDim2.fromOffset(record.Origin.X + delta.X, record.Origin.Y + delta.Y) placeQuickButtons()
+		end))
+		table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+			if input == record.Input or input.UserInputType == Enum.UserInputType.MouseButton1 then record.Dragging = false record.Input = nil end
+		end))
+		quick.Activated:Connect(function() if not record.Dragged then activate(key) end end)
+		local pinY = height - 42
+		local pinLabel = label(settings, "PinLabel", "SHOW ON SCREEN", pinY + 4) pinLabel.Size = UDim2.new(1, -90, 0, 24)
+		local pin = button(settings, "PinButton", "OFF", UDim2.new(1, -72, 0, pinY), UDim2.fromOffset(60, 30))
+		pin.Activated:Connect(function()
+			record.Pinned = not record.Pinned i18n.Text(pin, if record.Pinned then "ON" else "OFF") paint(pin, record.Pinned) placeQuickButtons()
+		end)
+		return record
+	end
+	local function slider(record, key, title)
+		label(record.Settings, "ValueLabel", title, 6)
+		local value = label(record.Settings, "Value", "", 6) value.Position = UDim2.new(1, -90, 0, 6) value.Size = UDim2.fromOffset(76, 22) value.TextXAlignment = Enum.TextXAlignment.Right
+		local track = Instance.new("Frame")
+		track.Name = key .. "Slider" track.Position = UDim2.fromOffset(16, 41) track.Size = UDim2.new(1, -32, 0, 10)
+		track.BackgroundColor3 = Color3.fromRGB(80, 91, 107) track.BorderSizePixel = 0 track.Active = true track.ZIndex = 21 track.Parent = record.Settings corner(track, 5)
+		local fill = Instance.new("Frame") fill.BackgroundColor3 = Color3.fromRGB(111, 255, 171) fill.BorderSizePixel = 0 fill.ZIndex = 22 fill.Parent = track corner(fill, 5)
+		local knob = Instance.new("Frame") knob.Name = "Knob" knob.AnchorPoint = Vector2.new(0.5, 0.5) knob.Size = UDim2.fromOffset(20, 20)
+		knob.BackgroundColor3 = COLORS.white knob.BorderSizePixel = 0 knob.Active = true knob.ZIndex = 23 knob.Parent = track corner(knob, 10)
+		local function refresh()
+			local number = (movement.Config :: any)[key] local fraction = (number - 1) / 999
+			value.Text = tostring(number) fill.Size = UDim2.fromScale(fraction, 1) knob.Position = UDim2.fromScale(fraction, 0.5)
+		end
+		local drag = nil
+		local function setX(x)
+			local alpha = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+			movement.Set(key, 1 + alpha * 999)
+		end
+		local function begin(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then drag = input setX(input.Position.X) end
+		end
+		track.InputBegan:Connect(begin) knob.InputBegan:Connect(begin)
+		table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+			if drag and (input == drag or (drag.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)) then setX(input.Position.X) end
+		end))
+		table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+			if input == drag or input.UserInputType == Enum.UserInputType.MouseButton1 then drag = nil end
+		end))
+		movement.Subscribe(refresh)
+	end
+	local speed = addCard("Speed", "SPEED", "Adjust walking speed", 2, 112, "SPEED")
+	slider(speed, "SpeedValue", "WALK SPEED")
+	local flight = addCard("Flight", "FLIGHT", "Fly with movement controls and up / down", 3, 150, "FLIGHT")
+	slider(flight, "FlightSpeed", "FLIGHT SPEED")
+	local hint = label(flight.Settings, "FlightHelp", "Move normally. Space / E: up. Ctrl / Q: down. Touch: arrow buttons.", 62)
+	hint.TextWrapped = true hint.Size = UDim2.new(1, -24, 0, 40)
+	addCard("Noclip", "NOCLIP", "Walk through walls", 4, 52, "NOCLIP")
+	addCard("InfiniteJump", "INFINITE JUMP", "Jump again while in the air", 5, 52, "JUMP")
+	local teleport = addCard("Teleport", "TELEPORT", "Move next to another player", 6, 276, "TELEPORT")
+	label(teleport.Settings, "ModeLabel", "TELEPORT MODE", 4)
+	local modeButtons = {}
+	local playerList = Instance.new("ScrollingFrame")
+	playerList.Name = "PlayerList" playerList.Position = UDim2.fromOffset(12, 70) playerList.Size = UDim2.new(1, -24, 0, 110)
+	playerList.BackgroundTransparency = 1 playerList.BorderSizePixel = 0 playerList.ScrollBarThickness = 3
+	playerList.CanvasSize = UDim2.fromOffset(0, 0) playerList.ZIndex = 21 playerList.Parent = teleport.Settings
+	local empty = label(teleport.Settings, "SelectionHint", "Nearest player in any direction", 90)
+	empty.TextWrapped = true empty.Size = UDim2.new(1, -24, 0, 70)
+	local playerRows = {}
+	local lastSignature = ""
+	local function rebuildPlayers(force)
+		local targets = movement.Targets()
+		local names = {} for _, other in ipairs(targets) do table.insert(names, tostring(other.UserId)) end
+		local signature = table.concat(names, ":")
+		if force or signature ~= lastSignature then
+			lastSignature = signature
+			for _, entry in ipairs(playerRows) do entry.Button:Destroy() end table.clear(playerRows)
+			for index, other in ipairs(targets) do
+				local row = button(playerList, "Player_" .. tostring(other.UserId), "", UDim2.fromOffset(0, (index - 1) * 34), UDim2.new(1, -6, 0, 30))
+				row.Text = other.DisplayName .. " (@" .. other.Name .. ")" row:SetAttribute("PlayerName", true)
+				row.TextTruncate = Enum.TextTruncate.AtEnd
+				table.insert(playerRows, {Player = other, Button = row})
+				row.Activated:Connect(function()
+					movement.SelectedPlayer = other
+					for _, entry in ipairs(playerRows) do paint(entry.Button, entry.Player == other) end
+				end)
+			end
+			playerList.CanvasSize = UDim2.fromOffset(0, #targets * 34)
+		end
+		for _, entry in ipairs(playerRows) do paint(entry.Button, entry.Player == movement.SelectedPlayer) end
+		playerList.Visible = movement.TeleportMode == "Selected" and #targets > 0
+		empty.Visible = not playerList.Visible
+		i18n.Text(empty, if #targets == 0 then "No available players" elseif movement.TeleportMode == "Random" then "A random available player" else "Nearest player in any direction")
+	end
+	for index, mode in ipairs({{Key = "Nearest", Text = "Nearest"}, {Key = "Random", Text = "Random"}, {Key = "Selected", Text = "Choose player"}}) do
+		local item = button(teleport.Settings, "TeleportMode_" .. mode.Key, mode.Text, UDim2.new((index - 1) / 3, 12, 0, 32), UDim2.new(1 / 3, -16, 0, 30))
+		modeButtons[mode.Key] = item
+		item.Activated:Connect(function()
+			movement.TeleportMode = mode.Key
+			for key, control in pairs(modeButtons) do paint(control, key == mode.Key) end
+			rebuildPlayers(true)
+		end)
+	end
+	paint(modeButtons.Nearest, true)
+	local go = button(teleport.Settings, "TeleportNow", "TELEPORT NOW", UDim2.new(0, 12, 0, 190), UDim2.new(1, -24, 0, 34))
+	go.Activated:Connect(function() activate("Teleport") end)
+	rebuildPlayers(true)
+	table.insert(connections, Players.PlayerAdded:Connect(function() rebuildPlayers(true) end))
+	table.insert(connections, Players.PlayerRemoving:Connect(function(other)
+		if movement.SelectedPlayer == other then movement.SelectedPlayer = nil end
+		task.defer(function() if gui.Parent then rebuildPlayers(true) end end)
+	end))
+	local flightControls = Instance.new("Frame")
+	flightControls.Name = "FlightControls" flightControls.AnchorPoint = Vector2.new(0.5, 1)
+	flightControls.Position = UDim2.new(0.5, 0, 1, -80) flightControls.Size = UDim2.fromOffset(124, 54)
+	flightControls.BackgroundTransparency = 1 flightControls.ZIndex = 60 flightControls.Visible = false flightControls.Parent = gui
+	local held = {}
+	for index, entry in ipairs({{Name = "Up", Text = "↑", Direction = 1}, {Name = "Down", Text = "↓", Direction = -1}}) do
+		local control = button(flightControls, entry.Name, entry.Text, UDim2.fromOffset((index - 1) * 66, 0), UDim2.fromOffset(58, 54))
+		control.ZIndex = 61 control.TextSize = 26
+		control.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then held[input] = entry.Direction end
+		end)
+	end
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input) held[input] = nil end))
+	table.insert(connections, UserInputService.WindowFocusReleased:Connect(function() table.clear(held) movement.Vertical = 0 end))
+	local scanClock = 0
+	table.insert(connections, RunService.RenderStepped:Connect(function(dt)
+		placeQuickButtons()
+		flightControls.Visible = movement.Config.Flight and not panel.Visible
+		if not flightControls.Visible then table.clear(held) end
+		local vertical = 0 for _, direction in pairs(held) do vertical += direction end movement.Vertical = math.clamp(vertical, -1, 1)
+		scanClock += dt
+		if scanClock >= 0.5 then scanClock = 0 if expanded == teleport then rebuildPlayers(false) end end
+	end))
+	movement.Subscribe(function()
+		for _, entry in ipairs(records) do
+			if entry.Key ~= "Teleport" then
+				local active = (movement.Config :: any)[entry.Key]
+				i18n.Text(entry.Toggle, if active then "ON" else "OFF") paint(entry.Toggle, active) paint(entry.Quick, active)
+			end
+		end
+		if not movement.Config.Flight then table.clear(held) movement.Vertical = 0 end
+		flightControls.Visible = movement.Config.Flight and not panel.Visible
+	end)
+	gui.Destroying:Connect(function()
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		table.clear(held)
+	end)
+end
+setupOtherTools()
+-- END OTHER TOOLS
 
 local cameraConnection: RBXScriptConnection? = nil
 local function updateResponsiveScale()
