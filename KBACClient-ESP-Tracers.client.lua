@@ -560,6 +560,7 @@ local trackedSkeletons: {[Model]: Frame} = {}
 local trackedLifecycleConnections: {[Model]: {RBXScriptConnection}} = {}
 local charactersFolder: Instance? = nil
 local cleanedCharactersFolder: Instance? = nil
+local localGameCharacter: Model? = nil
 
 local function belongsToPlayer(model: Model): boolean
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
@@ -766,6 +767,7 @@ local function scanCharacters()
 		for model in pairs(trackedHighlights) do table.insert(staleModels, model) end
 		for _, model in ipairs(staleModels) do destroyTracked(model) end
 		cleanedCharactersFolder = nil
+		localGameCharacter = nil
 		return
 	end
 	if cleanedCharactersFolder ~= charactersFolder then
@@ -777,12 +779,32 @@ local function scanCharacters()
 		cleanedCharactersFolder = charactersFolder
 	end
 	local currentModels: {[Model]: boolean} = {}
+	local bestLocalCharacter: Model? = nil
+	local bestLocalScore = -1
 	for _, descendant in ipairs(charactersFolder:GetDescendants()) do
-		if descendant:IsA("Model") and looksLikeCharacter(descendant) then
-			currentModels[descendant] = true
-			trackModel(descendant)
+		if descendant:IsA("Model") then
+			if isLocalPlayerModel(descendant) then
+				local directRoot = descendant:FindFirstChild("HumanoidRootPart") or descendant:FindFirstChild("RootPart") or descendant:FindFirstChild("Root") or descendant.PrimaryPart
+				if directRoot and directRoot:IsA("BasePart") then
+					local score = if descendant.Name == player.Name then 2 else 0
+					for _, bodyPart in ipairs(descendant:GetDescendants()) do
+						if bodyPart:IsA("BasePart") and bodyPart.Name ~= "HumanoidRootPart" and bodyPart.Transparency < 0.95 then
+							score += 4
+							break
+						end
+					end
+					if score > bestLocalScore then
+						bestLocalScore = score
+						bestLocalCharacter = descendant
+					end
+				end
+			elseif looksLikeCharacter(descendant) then
+				currentModels[descendant] = true
+				trackModel(descendant)
+			end
 		end
 	end
+	localGameCharacter = bestLocalCharacter
 	local staleModels = {}
 	for model in pairs(trackedHighlights) do
 		if not currentModels[model] then table.insert(staleModels, model) end
@@ -825,6 +847,7 @@ card.LayoutOrder = 2
 card.ZIndex = 17
 card.Parent = bloxModules
 corner(card, 18)
+stroke(card, 0.62, 1)
 
 local cardButton = Instance.new("TextButton")
 cardButton.Name = "OpenSettings"
@@ -1782,6 +1805,12 @@ local function getLocalAimRoot(): (BasePart?, Humanoid?, Model?)
 		if humanoid and humanoid.RootPart then return humanoid.RootPart end
 		if character.PrimaryPart then return character.PrimaryPart end
 		return getBodyPart(character, "RootPart", "Root")
+	end
+	if localGameCharacter and localGameCharacter.Parent then
+		local gameRoot = findRoot(localGameCharacter)
+		if gameRoot then
+			return gameRoot, localGameCharacter:FindFirstChildWhichIsA("Humanoid", true), localGameCharacter
+		end
 	end
 	local character = player.Character
 	local root = if character then findRoot(character) else nil
