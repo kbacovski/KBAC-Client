@@ -74,7 +74,9 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("AimBuild", "workspace-rig-10")
+gui:SetAttribute("ClientBuild", "hitbox-1")
+gui:SetAttribute("AimStatus", "Временно недоступен")
+gui:SetAttribute("HitboxEnabled", false)
 
 local blur = Instance.new("BlurEffect")
 blur.Name = "KBACClientBlur"
@@ -567,8 +569,6 @@ local trackedSkeletons: {[Model]: Frame} = {}
 local trackedLifecycleConnections: {[Model]: {RBXScriptConnection}} = {}
 local charactersFolder: Instance? = nil
 local cleanedCharactersFolder: Instance? = nil
-local localGameCharacter: Model? = nil
-local localAimModels: {Model} = {}
 
 local function belongsToPlayer(model: Model): boolean
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
@@ -586,6 +586,133 @@ local function isLocalPlayerModel(model: Model): boolean
 	if lowerName == string.lower(player.Name) or lowerName == string.lower(player.DisplayName) then return true end
 	local modelUserId = model:GetAttribute("UserId") or model:GetAttribute("PlayerUserId")
 	return modelUserId == player.UserId
+end
+
+-- HITBOX scales actual Head parts from their saved original size.
+-- It changes the local client only; the game's server decides hit registration.
+type HitboxHeadState = {
+	Model: Model,
+	Size: Vector3,
+	CanCollide: boolean,
+	CanQuery: boolean,
+	Massless: boolean,
+	Mesh: SpecialMesh?,
+	MeshScale: Vector3?,
+}
+local hitbox = {
+	Enabled = false,
+	Multiplier = 3,
+	Originals = {} :: {[BasePart]: HitboxHeadState},
+}
+
+function hitbox.RestoreHead(head: BasePart)
+	local original = hitbox.Originals[head]
+	if not original then return end
+	if head.Parent then
+		head.Size = original.Size
+		head.CanCollide = original.CanCollide
+		head.CanQuery = original.CanQuery
+		head.Massless = original.Massless
+	end
+	if original.Mesh and original.Mesh.Parent and original.MeshScale then
+		original.Mesh.Scale = original.MeshScale
+	end
+	hitbox.Originals[head] = nil
+end
+
+function hitbox.RestoreAll()
+	for head in pairs(hitbox.Originals) do hitbox.RestoreHead(head) end
+end
+
+function hitbox.RestoreModel(model: Model)
+	for head, original in pairs(hitbox.Originals) do
+		if original.Model == model then hitbox.RestoreHead(head) end
+	end
+end
+
+function hitbox.FindHead(model: Model): BasePart?
+	local direct = model:FindFirstChild("Head")
+	if direct and direct:IsA("BasePart") then return direct end
+	for _, part in ipairs(model:GetDescendants()) do
+		if part:IsA("BasePart") and string.lower(part.Name) == "head" then
+			local ancestor: Instance? = part.Parent
+			local isBody = true
+			while ancestor and ancestor ~= model do
+				if ancestor:IsA("Accessory") or ancestor:IsA("Tool") or ancestor.Name == "WeaponModel" then
+					isBody = false
+					break
+				end
+				ancestor = ancestor.Parent
+			end
+			if isBody then return part end
+		end
+	end
+	return nil
+end
+
+function hitbox.IsPlayerTarget(model: Model, currentPlayers: {Player}): boolean
+	if isLocalPlayerModel(model) or not model:IsDescendantOf(workspace) then return false end
+	local ownerId = model:GetAttribute("UserId") or model:GetAttribute("PlayerUserId")
+	for _, other in ipairs(currentPlayers) do
+		if other ~= player and (other.Character == model or model.Name == other.Name
+			or model.Name == other.DisplayName or ownerId == other.UserId) then return true end
+	end
+	return false
+end
+
+function hitbox.Apply(head: BasePart, model: Model)
+	local original = hitbox.Originals[head]
+	if not original then
+		original = {
+			Model = model, Size = head.Size,
+			CanCollide = head.CanCollide, CanQuery = head.CanQuery, Massless = head.Massless,
+		}
+		hitbox.Originals[head] = original
+	end
+	local mesh = head:FindFirstChildWhichIsA("SpecialMesh")
+	if mesh and mesh.MeshType ~= Enum.MeshType.FileMesh then mesh = nil end
+	if original.Mesh ~= mesh then
+		if original.Mesh and original.Mesh.Parent and original.MeshScale then original.Mesh.Scale = original.MeshScale end
+		original.Mesh = mesh
+		original.MeshScale = if mesh then mesh.Scale else nil
+	end
+	-- File meshes have an independent visual scale; MeshParts follow Size.
+	local targetSize = original.Size * hitbox.Multiplier
+	if head.Size ~= targetSize then head.Size = targetSize end
+	head.CanCollide = false
+	head.CanQuery = true
+	head.Massless = true
+	if mesh and original.MeshScale then
+		local targetScale = original.MeshScale * hitbox.Multiplier
+		if mesh.Scale ~= targetScale then mesh.Scale = targetScale end
+	end
+end
+
+function hitbox.Sync(): number
+	if not hitbox.Enabled or hitbox.Multiplier <= 1 then
+		hitbox.RestoreAll()
+		return 0
+	end
+	local activeHeads: {[BasePart]: boolean} = {}
+	local currentPlayers = Players:GetPlayers()
+	local count = 0
+	for model in pairs(trackedHighlights) do
+		if model.Parent and hitbox.IsPlayerTarget(model, currentPlayers) then
+			local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
+			if not humanoid or humanoid.Health > 0 then
+				local head = hitbox.FindHead(model)
+				if head and head.Parent and not activeHeads[head] then
+					activeHeads[head] = true
+					hitbox.Apply(head, model)
+					count += 1
+				end
+			end
+		end
+	end
+	for head in pairs(hitbox.Originals) do
+		if not activeHeads[head] then hitbox.RestoreHead(head) end
+	end
+	return count
 end
 
 local function looksLikeCharacter(model: Model): boolean
@@ -615,6 +742,7 @@ local function looksLikeCharacter(model: Model): boolean
 end
 
 local function destroyTracked(model: Model)
+	hitbox.RestoreModel(model)
 	local connections = trackedLifecycleConnections[model]
 	if connections then
 		for _, connection in ipairs(connections) do connection:Disconnect() end
@@ -769,14 +897,12 @@ local function trackModel(model: Model)
 end
 
 local function scanCharacters()
-	table.clear(localAimModels)
 	charactersFolder = workspace:FindFirstChild("Characters")
 	if not charactersFolder then
 		local staleModels = {}
 		for model in pairs(trackedHighlights) do table.insert(staleModels, model) end
 		for _, model in ipairs(staleModels) do destroyTracked(model) end
 		cleanedCharactersFolder = nil
-		localGameCharacter = nil
 		return
 	end
 	if cleanedCharactersFolder ~= charactersFolder then
@@ -788,38 +914,14 @@ local function scanCharacters()
 		cleanedCharactersFolder = charactersFolder
 	end
 	local currentModels: {[Model]: boolean} = {}
-	local bestLocalCharacter: Model? = nil
-	local bestLocalScore = -1
 	for _, descendant in ipairs(charactersFolder:GetDescendants()) do
 		if descendant:IsA("Model") then
-			if isLocalPlayerModel(descendant) then
-				local humanoid = descendant:FindFirstChildWhichIsA("Humanoid")
-				local controller = descendant:FindFirstChildWhichIsA("ControllerManager")
-				local directRoot = (controller and controller.RootPart) or (humanoid and humanoid.RootPart)
-					or descendant:FindFirstChild("HumanoidRootPart") or descendant:FindFirstChild("RootPart")
-					or descendant:FindFirstChild("Root") or descendant.PrimaryPart
-					or descendant:FindFirstChild("LowerTorso") or descendant:FindFirstChild("Torso")
-				if directRoot and directRoot:IsA("BasePart") then
-					table.insert(localAimModels, descendant)
-					local score = if descendant.Name == player.Name then 2 else 0
-					for _, bodyPart in ipairs(descendant:GetDescendants()) do
-						if bodyPart:IsA("BasePart") and bodyPart.Name ~= "HumanoidRootPart" and bodyPart.Transparency < 0.95 then
-							score += 4
-							break
-						end
-					end
-					if score > bestLocalScore then
-						bestLocalScore = score
-						bestLocalCharacter = descendant
-					end
-				end
-			elseif looksLikeCharacter(descendant) then
+			if looksLikeCharacter(descendant) then
 				currentModels[descendant] = true
 				trackModel(descendant)
 			end
 		end
 	end
-	localGameCharacter = bestLocalCharacter
 	local staleModels = {}
 	for model in pairs(trackedHighlights) do
 		if not currentModels[model] then table.insert(staleModels, model) end
@@ -1335,281 +1437,208 @@ tracerOpen.Activated:Connect(function()
 	if not tracerExpanded then task.delay(0.25, function() if not tracerExpanded then tracerSettings.Visible = false end end) end
 end)
 
--- Aim assist uses the same tracked BloxStrike characters as ESP.
-local aimEnabled = false
-local aimExpanded = false
-local aimRadius = 120
-local aimColor = Color3.fromRGB(255, 70, 82)
-local aimCharacterState = {
-	Humanoids = {} :: {[Humanoid]: boolean},
-	Controllers = {} :: {[ControllerManager]: Vector3},
-	NextReportAt = 0,
-}
-local savedAimCamera: Camera? = nil
-local savedAimCameraType = Enum.CameraType.Custom
-local savedAimMouseBehavior = Enum.MouseBehavior.Default
-local savedAimWorldOffset: Vector3? = nil
-local lockedAimModel: Model? = nil
-local aimLockStartedAt = 0
-local aimMouseTravel = 0
-
-local function restoreAimCharacterControl()
-	for humanoid, autoRotate in pairs(aimCharacterState.Humanoids) do
-		if humanoid.Parent then humanoid.AutoRotate = autoRotate end
-	end
-	for controller, facingDirection in pairs(aimCharacterState.Controllers) do
-		if controller.Parent then controller.FacingDirection = facingDirection end
-	end
-	table.clear(aimCharacterState.Humanoids)
-	table.clear(aimCharacterState.Controllers)
-end
-
-local function restoreAimCameraControl()
-	if savedAimCamera then
-		if savedAimCamera.Parent then savedAimCamera.CameraType = savedAimCameraType end
-		UserInputService.MouseBehavior = savedAimMouseBehavior
-	end
-	savedAimCamera = nil
-	savedAimWorldOffset = nil
-	aimMouseTravel = 0
-end
-
-local aimOverlayGui = Instance.new("ScreenGui")
-aimOverlayGui.Name = "KBACAimOverlay"
-aimOverlayGui.ResetOnSpawn = false
-aimOverlayGui.IgnoreGuiInset = true
-aimOverlayGui.ScreenInsets = Enum.ScreenInsets.None
-aimOverlayGui.DisplayOrder = gui.DisplayOrder + 1
-aimOverlayGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-aimOverlayGui.Parent = playerGui
-
-local aimOverlayRoot = Instance.new("Frame")
-aimOverlayRoot.Name = "AimOverlayRoot"
-aimOverlayRoot.Size = UDim2.fromScale(1, 1)
-aimOverlayRoot.BackgroundTransparency = 1
-aimOverlayRoot.BorderSizePixel = 0
-aimOverlayRoot.Parent = aimOverlayGui
-
-local aimCircle = Instance.new("Frame")
-aimCircle.Name = "AimFOVCircle"
-aimCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-aimCircle.Position = UDim2.fromScale(0.5, 0.5)
-aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
-aimCircle.BackgroundTransparency = 1
-aimCircle.BorderSizePixel = 0
-aimCircle.Visible = false
-aimCircle.ZIndex = 120
-aimCircle.Parent = aimOverlayRoot
-local aimCircleCorner = corner(aimCircle, 0)
-aimCircleCorner.CornerRadius = UDim.new(1, 0)
-local aimCircleStroke = stroke(aimCircle, 0.1, 2)
-aimCircleStroke.Color = aimColor
-
+-- AIM is intentionally unavailable until the custom character controller is understood.
 local aimCard = Instance.new("Frame")
 aimCard.Name = "AimCard"
 aimCard.Size = UDim2.new(1, -10, 0, 68)
 aimCard.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
-aimCard.BackgroundTransparency = 0.5
+aimCard.BackgroundTransparency = 0.65
 aimCard.BorderSizePixel = 0
-aimCard.ClipsDescendants = true
 aimCard.LayoutOrder = 2
 aimCard.Visible = false
 aimCard.ZIndex = 17
 aimCard.Parent = bloxModules
 corner(aimCard, 18)
 stroke(aimCard, 0.62, 1)
-
-local aimOpen = Instance.new("TextButton")
-aimOpen.Size = UDim2.new(1, -78, 0, 68)
-aimOpen.BackgroundTransparency = 1
-aimOpen.Text = ""
-aimOpen.AutoButtonColor = false
-aimOpen.ZIndex = 18
-aimOpen.Parent = aimCard
-
-local aimTitle = tracerTitle:Clone()
-aimTitle.Text = "AIM"
-aimTitle.Parent = aimOpen
-local aimDescription = tracerDescription:Clone()
-aimDescription.Text = "Target lock; move mouse to release"
-aimDescription.Parent = aimOpen
-local function setAimStatus(message: string)
-	if aimDescription.Text ~= message then
-		aimDescription.Text = message
-		gui:SetAttribute("AimStatus", message)
-	end
+do
+	local title = tracerTitle:Clone()
+	title.Text = "AIM"
+	title.TextTransparency = 0.4
+	title.Parent = aimCard
+	local description = tracerDescription:Clone()
+	description.Text = "Временно недоступен"
+	description.TextTransparency = 0.2
+	description.Size = UDim2.new(1, -90, 0, 19)
+	description.Parent = aimCard
+	local disabledToggle = tracerToggle:Clone()
+	disabledToggle.Name = "AimUnavailable"
+	disabledToggle.Active = false
+	disabledToggle.Selectable = false
+	disabledToggle.BackgroundTransparency = 0.65
+	disabledToggle.Parent = aimCard
+	local knob = disabledToggle:FindFirstChildWhichIsA("Frame")
+	if knob then knob.BackgroundTransparency = 0.55 end
 end
 
-local aimToggle = tracerToggle:Clone()
-aimToggle.Name = "AimToggle"
-aimToggle.Parent = aimCard
-local aimKnob = aimToggle:FindFirstChildWhichIsA("Frame") :: Frame
+local hitboxCard = Instance.new("Frame")
+hitboxCard.Name = "HitboxCard"
+hitboxCard.Size = UDim2.new(1, -10, 0, 68)
+hitboxCard.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
+hitboxCard.BackgroundTransparency = 0.5
+hitboxCard.BorderSizePixel = 0
+hitboxCard.ClipsDescendants = true
+hitboxCard.LayoutOrder = 3
+hitboxCard.Visible = false
+hitboxCard.ZIndex = 17
+hitboxCard.Parent = bloxModules
+corner(hitboxCard, 18)
+stroke(hitboxCard, 0.62, 1)
 
-local aimSettings = Instance.new("Frame")
-aimSettings.Position = UDim2.fromOffset(12, 76)
-aimSettings.Size = UDim2.new(1, -24, 0, 118)
-aimSettings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
-aimSettings.BackgroundTransparency = 0.54
-aimSettings.BorderSizePixel = 0
-aimSettings.Visible = false
-aimSettings.ZIndex = 18
-aimSettings.Parent = aimCard
-corner(aimSettings, 15)
-stroke(aimSettings, 0.58)
+local hitboxConnections: {RBXScriptConnection} = {}
+do
+	local expanded = false
+	local open = Instance.new("TextButton")
+	open.Name = "OpenHitboxSettings"
+	open.Size = UDim2.new(1, -78, 0, 68)
+	open.BackgroundTransparency = 1
+	open.Text = ""
+	open.AutoButtonColor = false
+	open.ZIndex = 18
+	open.Parent = hitboxCard
+	local title = tracerTitle:Clone()
+	title.Text = "HITBOX"
+	title.Parent = open
+	local description = tracerDescription:Clone()
+	description.Text = "Размер голов других игроков"
+	description.Parent = open
+	local button = tracerToggle:Clone()
+	button.Name = "HitboxToggle"
+	button.Parent = hitboxCard
+	local knob = button:FindFirstChildWhichIsA("Frame") :: Frame
 
-local aimColorLabel = tracerModeLabel:Clone()
-aimColorLabel.Position = UDim2.fromOffset(12, 9)
-aimColorLabel.Text = "CIRCLE COLOR"
-aimColorLabel.Parent = aimSettings
+	local settingsPanel = Instance.new("Frame")
+	settingsPanel.Name = "HitboxSettings"
+	settingsPanel.Position = UDim2.fromOffset(12, 76)
+	settingsPanel.Size = UDim2.new(1, -24, 0, 78)
+	settingsPanel.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
+	settingsPanel.BackgroundTransparency = 0.54
+	settingsPanel.BorderSizePixel = 0
+	settingsPanel.Visible = false
+	settingsPanel.ZIndex = 18
+	settingsPanel.Parent = hitboxCard
+	corner(settingsPanel, 15)
+	stroke(settingsPanel, 0.58)
+	local label = tracerModeLabel:Clone()
+	label.Position = UDim2.fromOffset(12, 9)
+	label.Size = UDim2.new(1, -170, 0, 24)
+	label.Text = "РАЗМЕР ГОЛОВЫ"
+	label.Parent = settingsPanel
+	local value = label:Clone()
+	value.Name = "HeadSizeValue"
+	value.Position = UDim2.new(1, -109, 0, 9)
+	value.Size = UDim2.fromOffset(60, 24)
+	value.TextXAlignment = Enum.TextXAlignment.Center
+	value.Parent = settingsPanel
 
-local aimPalette = Instance.new("Frame")
-aimPalette.Position = UDim2.fromOffset(12, 29)
-aimPalette.Size = UDim2.new(1, -24, 0, 26)
-aimPalette.BackgroundTransparency = 1
-aimPalette.ZIndex = 20
-aimPalette.Parent = aimSettings
-local aimPaletteLayout = Instance.new("UIListLayout")
-aimPaletteLayout.FillDirection = Enum.FillDirection.Horizontal
-aimPaletteLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-aimPaletteLayout.Padding = UDim.new(0, 8)
-aimPaletteLayout.Parent = aimPalette
-local aimSizeFill = Instance.new("Frame")
-local aimSwatches: {{Color: Color3, Outline: UIStroke}} = {}
-for _, color in ipairs({
-	Color3.fromRGB(255, 70, 82), Color3.fromRGB(255, 170, 45),
-	Color3.fromRGB(255, 235, 70), Color3.fromRGB(70, 235, 135),
-	Color3.fromRGB(70, 190, 255), Color3.fromRGB(150, 105, 255),
-	Color3.fromRGB(255, 105, 220), Color3.fromRGB(255, 255, 255),
-}) do
-	local dot = Instance.new("TextButton")
-	dot.Size = UDim2.fromOffset(24, 24)
-	dot.BackgroundColor3 = color
-	dot.BorderSizePixel = 0
-	dot.Text = ""
-	dot.AutoButtonColor = false
-	dot.ZIndex = 21
-	dot.Parent = aimPalette
-	corner(dot, 12)
-	local outline = stroke(dot, 0.65)
-	table.insert(aimSwatches, {Color = color, Outline = outline})
-	dot.Activated:Connect(function()
-		aimColor = color
-		aimCircleStroke.Color = color
-		aimSizeFill.BackgroundColor3 = color
-		for _, swatch in ipairs(aimSwatches) do
-			swatch.Outline.Transparency = if swatch.Color == color then 0.05 else 0.65
+	local function stepButton(text: string, x: number): TextButton
+		local item = Instance.new("TextButton")
+		item.Size = UDim2.fromOffset(28, 26)
+		item.Position = UDim2.new(1, x, 0, 8)
+		item.BackgroundColor3 = Color3.fromRGB(46, 55, 70)
+		item.BackgroundTransparency = 0.3
+		item.TextColor3 = COLORS.white
+		item.TextSize = 20
+		item.Text = text
+		item.Font = Enum.Font.GothamSemibold
+		item.ZIndex = 22
+		item.Parent = settingsPanel
+		corner(item, 7)
+		stroke(item, 0.65)
+		return item
+	end
+	local minus = stepButton("−", -143)
+	local plus = stepButton("+", -40)
+	local track = Instance.new("Frame")
+	track.Position = UDim2.fromOffset(14, 55)
+	track.Size = UDim2.new(1, -28, 0, 6)
+	track.BackgroundColor3 = Color3.fromRGB(105, 114, 130)
+	track.BackgroundTransparency = 0.35
+	track.BorderSizePixel = 0
+	track.ZIndex = 20
+	track.Parent = settingsPanel
+	corner(track, 3)
+	local fill = Instance.new("Frame")
+	fill.BackgroundColor3 = Color3.fromRGB(255, 70, 82)
+	fill.BorderSizePixel = 0
+	fill.ZIndex = 21
+	fill.Parent = track
+	corner(fill, 3)
+	local thumb = Instance.new("Frame")
+	thumb.AnchorPoint = Vector2.new(0.5, 0.5)
+	thumb.Size = UDim2.fromOffset(18, 18)
+	thumb.BackgroundColor3 = COLORS.white
+	thumb.BorderSizePixel = 0
+	thumb.ZIndex = 22
+	thumb.Parent = track
+	corner(thumb, 9)
+	local hit = Instance.new("Frame")
+	hit.AnchorPoint = Vector2.new(0, 0.5)
+	hit.Position = UDim2.fromScale(0, 0.5)
+	hit.Size = UDim2.new(1, 0, 0, 32)
+	hit.BackgroundTransparency = 1
+	hit.Active = true
+	hit.ZIndex = 23
+	hit.Parent = track
+
+	local function refreshSize()
+		local alpha = (hitbox.Multiplier - 1) / 19
+		value.Text = string.format("%.1f×", hitbox.Multiplier)
+		fill.Size = UDim2.new(alpha, 0, 1, 0)
+		thumb.Position = UDim2.new(alpha, 0, 0.5, 0)
+		gui:SetAttribute("HitboxMultiplier", hitbox.Multiplier)
+	end
+	local function setSize(multiplier: number)
+		hitbox.Multiplier = math.clamp(math.round(multiplier * 2) / 2, 1, 20)
+		refreshSize()
+		if hitbox.Enabled then hitbox.Sync() refreshESPVisuals() end
+	end
+	local function setFromX(x: number)
+		local alpha = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
+		setSize(1 + alpha * 19)
+	end
+	local dragInput: InputObject? = nil
+	hit.InputBegan:Connect(function(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragInput = input
+			setFromX(input.Position.X)
 		end
 	end)
+	table.insert(hitboxConnections, UserInputService.InputChanged:Connect(function(input: InputObject)
+		if dragInput and (input == dragInput or input.UserInputType == Enum.UserInputType.MouseMovement) then
+			setFromX(input.Position.X)
+		end
+	end))
+	table.insert(hitboxConnections, UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then dragInput = nil end
+	end))
+	minus.Activated:Connect(function() setSize(hitbox.Multiplier - 0.5) end)
+	plus.Activated:Connect(function() setSize(hitbox.Multiplier + 0.5) end)
+	button.Activated:Connect(function()
+		hitbox.Enabled = not hitbox.Enabled
+		gui:SetAttribute("HitboxEnabled", hitbox.Enabled)
+		TweenService:Create(button, quickTween, {
+			BackgroundColor3 = hitbox.Enabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
+			BackgroundTransparency = hitbox.Enabled and 0.42 or 0.18,
+		}):Play()
+		TweenService:Create(knob, quickTween, {
+			Position = UDim2.fromOffset(if hitbox.Enabled then 25 else 3, 3),
+		}):Play()
+		if hitbox.Enabled then scanCharacters() end
+		gui:SetAttribute("HitboxCount", hitbox.Sync())
+		refreshESPVisuals()
+	end)
+	open.Activated:Connect(function()
+		expanded = not expanded
+		settingsPanel.Visible = true
+		TweenService:Create(hitboxCard, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+			Size = UDim2.new(1, -10, 0, if expanded then 166 else 68),
+		}):Play()
+		if not expanded then task.delay(0.25, function() if not expanded then settingsPanel.Visible = false end end) end
+	end)
+	refreshSize()
 end
-aimSwatches[1].Outline.Transparency = 0.05
-
-local aimSizeLabel = aimColorLabel:Clone()
-aimSizeLabel.Position = UDim2.fromOffset(12, 63)
-aimSizeLabel.Text = "CIRCLE RADIUS"
-aimSizeLabel.Parent = aimSettings
-local aimSizeValue = aimSizeLabel:Clone()
-aimSizeValue.Position = UDim2.new(1, -66, 0, 63)
-aimSizeValue.Size = UDim2.fromOffset(54, 18)
-aimSizeValue.TextXAlignment = Enum.TextXAlignment.Right
-aimSizeValue.Parent = aimSettings
-
-local aimSizeTrack = Instance.new("Frame")
-aimSizeTrack.Position = UDim2.fromOffset(14, 99)
-aimSizeTrack.Size = UDim2.new(1, -28, 0, 6)
-aimSizeTrack.BackgroundColor3 = Color3.fromRGB(105, 114, 130)
-aimSizeTrack.BackgroundTransparency = 0.35
-aimSizeTrack.BorderSizePixel = 0
-aimSizeTrack.Active = true
-aimSizeTrack.ZIndex = 20
-aimSizeTrack.Parent = aimSettings
-corner(aimSizeTrack, 3)
-aimSizeFill.BackgroundColor3 = aimColor
-aimSizeFill.BorderSizePixel = 0
-aimSizeFill.ZIndex = 21
-aimSizeFill.Parent = aimSizeTrack
-corner(aimSizeFill, 3)
-local aimSizeKnob = Instance.new("Frame")
-aimSizeKnob.AnchorPoint = Vector2.new(0.5, 0.5)
-aimSizeKnob.Size = UDim2.fromOffset(18, 18)
-aimSizeKnob.BackgroundColor3 = COLORS.white
-aimSizeKnob.BorderSizePixel = 0
-aimSizeKnob.ZIndex = 22
-aimSizeKnob.Parent = aimSizeTrack
-corner(aimSizeKnob, 9)
-local aimSizeHit = Instance.new("Frame")
-aimSizeHit.AnchorPoint = Vector2.new(0, 0.5)
-aimSizeHit.Position = UDim2.new(0, 0, 0.5, 0)
-aimSizeHit.Size = UDim2.new(1, 0, 0, 30)
-aimSizeHit.BackgroundTransparency = 1
-aimSizeHit.Active = true
-aimSizeHit.ZIndex = 23
-aimSizeHit.Parent = aimSizeTrack
-
-local function refreshAimSize()
-	local alpha = (aimRadius - 30) / 270
-	aimSizeValue.Text = tostring(aimRadius) .. " px"
-	aimCircle.Size = UDim2.fromOffset(aimRadius * 2, aimRadius * 2)
-	aimSizeFill.Size = UDim2.new(alpha, 0, 1, 0)
-	aimSizeFill.BackgroundColor3 = aimColor
-	aimSizeKnob.Position = UDim2.new(alpha, 0, 0.5, 0)
-end
-
-local draggingAimSize = false
-local aimDragInput: InputObject? = nil
-local function setAimSizeFromX(x: number)
-	local alpha = math.clamp((x - aimSizeTrack.AbsolutePosition.X) / math.max(aimSizeTrack.AbsoluteSize.X, 1), 0, 1)
-	aimRadius = math.round(30 + alpha * 270)
-	refreshAimSize()
-end
-aimSizeHit.InputBegan:Connect(function(input: InputObject)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		draggingAimSize = true
-		aimDragInput = input
-		setAimSizeFromX(input.Position.X)
-	end
-end)
-UserInputService.InputChanged:Connect(function(input: InputObject)
-	if draggingAimSize and (input.UserInputType == Enum.UserInputType.MouseMovement or input == aimDragInput) then
-		setAimSizeFromX(input.Position.X)
-	end
-end)
-UserInputService.InputEnded:Connect(function(input: InputObject)
-	if input == aimDragInput then
-		draggingAimSize = false
-		aimDragInput = nil
-	end
-end)
-refreshAimSize()
-
-local function setAimEnabled(shouldEnable: boolean)
-	aimEnabled = shouldEnable
-	setAimStatus("Target lock; move mouse to release")
-	TweenService:Create(aimToggle, quickTween, {
-		BackgroundColor3 = aimEnabled and Color3.fromRGB(10, 12, 16) or Color3.fromRGB(104, 112, 127),
-		BackgroundTransparency = aimEnabled and 0.42 or 0.18,
-	}):Play()
-	TweenService:Create(aimKnob, quickTween, {
-		Position = aimEnabled and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3),
-	}):Play()
-	aimCircle.Visible = aimEnabled
-	if not aimEnabled then
-		lockedAimModel = nil
-		restoreAimCameraControl()
-		restoreAimCharacterControl()
-	end
-end
-
-aimToggle.Activated:Connect(function()
-	setAimEnabled(not aimEnabled)
-end)
-
-aimOpen.Activated:Connect(function()
-	aimExpanded = not aimExpanded
-	aimSettings.Visible = true
-	TweenService:Create(aimCard, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-		Size = UDim2.new(1, -10, 0, aimExpanded and 206 or 68),
-	}):Play()
-	if not aimExpanded then task.delay(0.25, function() if not aimExpanded then aimSettings.Visible = false end end) end
+local hitboxHeartbeat = RunService.Heartbeat:Connect(function()
+	if hitbox.Enabled and gui.Parent then gui:SetAttribute("HitboxCount", hitbox.Sync()) end
 end)
 
 local function switchBloxCategory(name: string)
@@ -1617,6 +1646,7 @@ local function switchBloxCategory(name: string)
 	card.Visible = name == "Visuals"
 	tracerCard.Visible = name == "Visuals"
 	aimCard.Visible = name == "Combat"
+	hitboxCard.Visible = name == "Combat"
 	combatEmpty.Visible = false
 	otherEmpty.Visible = name == "Other"
 	for categoryName, record in pairs(categoryButtons) do
@@ -1693,6 +1723,7 @@ workspace.ChildAdded:Connect(function(child: Instance)
 end)
 
 workspace.DescendantAdded:Connect(function(descendant: Instance)
+	if not gui.Parent then return end
 	if charactersFolder and descendant:IsDescendantOf(charactersFolder) then
 		local cursor: Instance? = descendant
 		while cursor and cursor ~= charactersFolder do
@@ -1712,7 +1743,7 @@ workspace.DescendantRemoving:Connect(function(descendant: Instance)
 end)
 
 local rescanClock = 0
-RunService.Heartbeat:Connect(function(deltaTime: number)
+local espHeartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime: number)
 	rescanClock += deltaTime
 	if rescanClock < 0.25 then return end
 	rescanClock = 0
@@ -1725,21 +1756,6 @@ local function getBodyPart(model: Model, ...: string): BasePart?
 		if part and part:IsA("BasePart") then return part end
 	end
 	return nil
-end
-
-local function getAimHeadPart(model: Model): BasePart?
-	local head = getBodyPart(model, "Head")
-	if head then return head end
-	local highlightedParts = trackedPlayerParts[model]
-	if not highlightedParts then return nil end
-	local highestPart: BasePart? = nil
-	for part in pairs(highlightedParts) do
-		if part.Parent and part:IsDescendantOf(model) then
-			if string.find(string.lower(part.Name), "head", 1, true) then return part end
-			if not highestPart or part.Position.Y > highestPart.Position.Y then highestPart = part end
-		end
-	end
-	return highestPart
 end
 
 local function getSkeletonPairs(model: Model)
@@ -1836,298 +1852,7 @@ local function hideTracerVisuals()
 	for _, arrow in pairs(tracerArrows) do arrow.Visible = false end
 end
 
-type LocalAimRig = {
-	Root: BasePart,
-	Character: Model,
-	Humanoid: Humanoid?,
-	Controller: ControllerManager?,
-}
-
-local function getLocalAimRigs(): ({LocalAimRig}, BasePart?)
-	local rigs: {LocalAimRig} = {}
-	local function addCharacter(character: Model?)
-		if not character or not character:IsDescendantOf(workspace) then return end
-		if player.Character and character ~= player.Character and character:IsAncestorOf(player.Character) then return end
-
-		-- Do not mistake a nested avatar's humanoid/root for its parent's controller.
-		local function isOwned(instance: Instance): boolean
-			local ancestor = instance.Parent
-			while ancestor and ancestor ~= character do
-				if ancestor:IsA("Model") then return false end
-				ancestor = ancestor.Parent
-			end
-			return ancestor == character
-		end
-		local humanoid: Humanoid? = nil
-		local controller: ControllerManager? = nil
-		local parts: {[string]: BasePart} = {}
-		for _, descendant in ipairs(character:GetDescendants()) do
-			if isOwned(descendant) then
-				if descendant:IsA("Humanoid") then humanoid = descendant end
-				if descendant:IsA("ControllerManager") then controller = descendant end
-				if descendant:IsA("BasePart") then parts[descendant.Name] = descendant end
-			end
-		end
-		-- A weapon/accessory model under the character is not another avatar.
-		local ownerId = character:GetAttribute("UserId") or character:GetAttribute("PlayerUserId")
-		local namedOwner = string.lower(character.Name) == string.lower(player.Name)
-			or string.lower(character.Name) == string.lower(player.DisplayName) or ownerId == player.UserId
-		if character ~= player.Character and not humanoid and not controller and not namedOwner
-			and not (parts.Head and (parts.Torso or parts.UpperTorso or parts.LowerTorso)) then return end
-		local root: BasePart? = nil
-		if controller and controller.RootPart and controller.RootPart:IsDescendantOf(character) then
-			root = controller.RootPart
-		elseif humanoid and humanoid.RootPart and humanoid.RootPart:IsDescendantOf(character) then
-			root = humanoid.RootPart
-		else
-			root = parts.HumanoidRootPart or parts.RootPart or parts.Root or character.PrimaryPart
-				or parts.LowerTorso or parts.Torso or parts.UpperTorso
-		end
-		if not root then return end
-		for _, rig in ipairs(rigs) do
-			-- Nested models can have independent roots; only a shared root is a duplicate.
-			if rig.Root == root then return end
-		end
-		table.insert(rigs, {Root = root, Character = character, Humanoid = humanoid, Controller = controller})
-	end
-
-	addCharacter(player.Character)
-	-- The local avatar can live directly under Workspace while opponents live
-	-- in Characters. Its exact account name identifies it without guessing by distance.
-	local workspaceCharacter = workspace:FindFirstChild(player.Name)
-	if workspaceCharacter and workspaceCharacter:IsA("Model") then
-		addCharacter(workspaceCharacter)
-	end
-	addCharacter(localGameCharacter)
-	for _, model in ipairs(localAimModels) do addCharacter(model) end
-	local followRoot: BasePart? = if rigs[1] then rigs[1].Root else nil
-	for _, rig in ipairs(rigs) do
-		if rig.Character == localGameCharacter then followRoot = rig.Root break end
-		if rig.Character == workspaceCharacter then followRoot = rig.Root end
-	end
-	-- Parent pivots must be applied before independent nested avatars.
-	local function depth(model: Model): number
-		local count = 0
-		local ancestor: Instance? = model.Parent
-		while ancestor do count += 1 ancestor = ancestor.Parent end
-		return count
-	end
-	table.sort(rigs, function(a, b) return depth(a.Character) < depth(b.Character) end)
-	return rigs, followRoot
-end
-
-local function faceAimCharacters(rigs: {LocalAimRig}, lookDirection: Vector3)
-	local horizontalDirection = Vector3.new(lookDirection.X, 0, lookDirection.Z)
-	if horizontalDirection.Magnitude < 0.001 then return end
-	local direction = horizontalDirection.Unit
-	local activeHumanoids: {[Humanoid]: boolean} = {}
-	local activeControllers: {[ControllerManager]: boolean} = {}
-	-- Keep a local report for troubleshooting; this does not send any data.
-	if os.clock() >= aimCharacterState.NextReportAt then
-		aimCharacterState.NextReportAt = os.clock() + 1
-		local lines = {"Build: workspace-rig-10", "Local rigs: " .. #rigs}
-		local function angle(part: BasePart): number
-			local facing = Vector3.new(part.CFrame.LookVector.X, 0, part.CFrame.LookVector.Z)
-			if facing.Magnitude < 0.001 then return -1 end
-			return math.deg(math.acos(math.clamp(facing.Unit:Dot(direction), -1, 1)))
-		end
-		for _, rig in ipairs(rigs) do
-			local body = getBodyPart(rig.Character, "UpperTorso", "Torso", "LowerTorso", "Head")
-			table.insert(lines, string.format("%s | root=%s | anchored=%s | humanoid=%s | controller=%s | before-write root=%.1fdeg body=%.1fdeg",
-				rig.Character:GetFullName(), rig.Root:GetFullName(), tostring(rig.Root.Anchored),
-				tostring(rig.Humanoid ~= nil), tostring(rig.Controller ~= nil), angle(rig.Root), if body then angle(body) else -1))
-		end
-		gui:SetAttribute("AimBodyReport", table.concat(lines, "\n"))
-	end
-	local poses: {[BasePart]: {Position: Vector3, PivotFromRoot: CFrame}} = {}
-	for _, rig in ipairs(rigs) do
-		if rig.Root:IsDescendantOf(rig.Character) and rig.Character:IsDescendantOf(workspace) then
-			poses[rig.Root] = {
-				Position = rig.Root.Position,
-				PivotFromRoot = rig.Root.CFrame:ToObjectSpace(rig.Character:GetPivot()),
-			}
-		end
-	end
-	for _, rig in ipairs(rigs) do
-		local root, character = rig.Root, rig.Character
-		if not root:IsDescendantOf(character) or not character:IsDescendantOf(workspace) then continue end
-		local humanoid, controller = rig.Humanoid, rig.Controller
-		if humanoid and humanoid.Parent then
-			activeHumanoids[humanoid] = true
-			if aimCharacterState.Humanoids[humanoid] == nil then
-				aimCharacterState.Humanoids[humanoid] = humanoid.AutoRotate
-			end
-			humanoid.AutoRotate = false
-		end
-		if controller and controller.Parent then
-			activeControllers[controller] = true
-			if aimCharacterState.Controllers[controller] == nil then
-				aimCharacterState.Controllers[controller] = controller.FacingDirection
-			end
-			controller.FacingDirection = direction
-		end
-		-- Use the captured position so rotating a parent cannot move a nested rig.
-		local pose = poses[root]
-		if not pose then continue end
-		local desiredRoot = CFrame.lookAt(pose.Position, pose.Position + direction)
-		character:PivotTo(desiredRoot * pose.PivotFromRoot)
-		root.CFrame = desiredRoot
-		root.AssemblyAngularVelocity = Vector3.zero
-	end
-	-- Restore replaced rigs immediately, including respawns during a lock.
-	for humanoid, autoRotate in pairs(aimCharacterState.Humanoids) do
-		if not activeHumanoids[humanoid] then
-			if humanoid.Parent then humanoid.AutoRotate = autoRotate end
-			aimCharacterState.Humanoids[humanoid] = nil
-		end
-	end
-	for controller, facingDirection in pairs(aimCharacterState.Controllers) do
-		if not activeControllers[controller] then
-			if controller.Parent then controller.FacingDirection = facingDirection end
-			aimCharacterState.Controllers[controller] = nil
-		end
-	end
-end
-
-local aimRenderStepName = "KBACClientAim_" .. game:GetService("HttpService"):GenerateGUID(false)
-gui:SetAttribute("AimRenderStepName", aimRenderStepName)
-RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, function()
-	if not aimEnabled then return end
-
-	local camera = workspace.CurrentCamera
-	if not camera then
-		setAimStatus("AIM: camera unavailable")
-		lockedAimModel = nil
-		restoreAimCameraControl()
-		restoreAimCharacterControl()
-		return
-	end
-	if savedAimCamera and savedAimCamera ~= camera then restoreAimCameraControl() end
-
-	local viewport = camera.ViewportSize
-	local overlaySize = aimOverlayRoot.AbsoluteSize
-	local viewHeight = if overlaySize.Y > 2 then overlaySize.Y else viewport.Y
-	local focalLength = if viewHeight > 2 then viewHeight / (2 * math.tan(math.rad(camera.FieldOfView) * 0.5)) else 0
-	local aimCandidates = trackedHighlights
-
-	local targetPart: BasePart? = nil
-	if lockedAimModel then
-		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
-		if lockedAimModel.Parent and aimCandidates[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
-			targetPart = getAimHeadPart(lockedAimModel)
-		else
-			lockedAimModel = nil
-		end
-	end
-	if lockedAimModel and not targetPart then
-		lockedAimModel = nil
-	end
-
-	if not lockedAimModel then
-		local closestDistance = aimRadius
-		local nearestDistance = math.huge
-		local candidateCount = 0
-		for model in pairs(aimCandidates) do
-			if model.Parent and not isLocalPlayerModel(model) then
-				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
-				if not humanoid or humanoid.Health > 0 then
-					local head = getAimHeadPart(model)
-					local highlightedParts = trackedPlayerParts[model]
-					if head and highlightedParts then
-						for part in pairs(highlightedParts) do
-							if part.Parent and part:IsDescendantOf(model) then
-								candidateCount += 1
-								local point = camera.CFrame:PointToObjectSpace(part.Position)
-								if point.Z < -0.01 and focalLength > 0 then
-									local distance = Vector2.new(point.X, point.Y).Magnitude * focalLength / -point.Z
-									nearestDistance = math.min(nearestDistance, distance)
-									if distance <= closestDistance then
-										closestDistance = distance
-										targetPart = head
-										lockedAimModel = model
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-		if not targetPart then
-			if candidateCount == 0 then
-				setAimStatus("AIM: no character parts found")
-			elseif nearestDistance < math.huge then
-				setAimStatus("AIM: nearest " .. math.round(nearestDistance) .. "px / circle " .. aimRadius .. "px")
-			else
-				setAimStatus("AIM: targets are behind camera")
-			end
-		end
-	end
-
-	if not targetPart or not targetPart.Parent then
-		if not next(aimCandidates) then setAimStatus("AIM: no characters found") end
-		lockedAimModel = nil
-		restoreAimCameraControl()
-		restoreAimCharacterControl()
-		return
-	end
-
-	if savedAimCamera and not panel.Visible and UserInputService.MouseEnabled and os.clock() - aimLockStartedAt > 0.4 then
-		aimMouseTravel += UserInputService:GetMouseDelta().Magnitude
-		if aimMouseTravel >= 150 then
-			setAimEnabled(false)
-			setAimStatus("AIM: released by mouse")
-			return
-		end
-	end
-
-	local rigs, root = getLocalAimRigs()
-	local hasRoot = root ~= nil and root.Parent ~= nil
-	if not savedAimCamera then
-		savedAimCamera = camera
-		savedAimCameraType = camera.CameraType
-		savedAimMouseBehavior = UserInputService.MouseBehavior
-		aimLockStartedAt = os.clock()
-		aimMouseTravel = 0
-	end
-	if panel.Visible then
-		aimLockStartedAt = os.clock()
-		aimMouseTravel = 0
-	end
-	camera.CameraType = Enum.CameraType.Scriptable
-	if UserInputService.MouseEnabled then
-		UserInputService.MouseBehavior = if panel.Visible then Enum.MouseBehavior.Default else Enum.MouseBehavior.LockCenter
-	end
-
-	local aimPoint = targetPart.Position
-
-	local cameraPosition = camera.CFrame.Position
-	if hasRoot and root then
-		if savedAimWorldOffset then
-			cameraPosition = root.Position + savedAimWorldOffset
-		else
-			savedAimWorldOffset = cameraPosition - root.Position
-		end
-	end
-	if (aimPoint - cameraPosition).Magnitude > 0.01 then
-		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
-		camera.Focus = CFrame.new(aimPoint)
-		faceAimCharacters(rigs, camera.CFrame.LookVector)
-	end
-	setAimStatus(if hasRoot then "AIM: target locked" else "AIM: camera locked; character missing")
-end)
-
-function aimCharacterState.UpdateRotation()
-	if not aimEnabled or not lockedAimModel or not trackedHighlights[lockedAimModel] then return end
-	local head = getAimHeadPart(lockedAimModel)
-	local camera = workspace.CurrentCamera
-	if not head or not camera or not savedAimCamera then return end
-	faceAimCharacters(getLocalAimRigs(), camera.CFrame.LookVector)
-end
-local aimSimulationConnection = RunService.PreSimulation:Connect(aimCharacterState.UpdateRotation)
-local aimPostSimulationConnection = RunService.PostSimulation:Connect(aimCharacterState.UpdateRotation)
-
-RunService.RenderStepped:Connect(function()
+local visualRenderConnection = RunService.RenderStepped:Connect(function()
 	if not espEnabled and not tracerEnabled then return end
 	local camera = workspace.CurrentCamera
 	if not camera then return end
@@ -2362,12 +2087,12 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
-	aimSimulationConnection:Disconnect()
-	aimPostSimulationConnection:Disconnect()
-	RunService:UnbindFromRenderStep(aimRenderStepName)
-	if aimOverlayGui.Parent then aimOverlayGui:Destroy() end
-	restoreAimCameraControl()
-	restoreAimCharacterControl()
+	hitbox.Enabled = false
+	hitboxHeartbeat:Disconnect()
+	espHeartbeatConnection:Disconnect()
+	visualRenderConnection:Disconnect()
+	for _, connection in ipairs(hitboxConnections) do connection:Disconnect() end
+	hitbox.RestoreAll()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
 	if effectsFolder.Parent then effectsFolder:Destroy() end
 	if blur.Parent then blur:Destroy() end
