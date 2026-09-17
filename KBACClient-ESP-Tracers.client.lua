@@ -49,12 +49,18 @@ local COLORS = {
 	glass = Color3.fromRGB(52, 61, 76),
 }
 
--- Explicit text bindings keep live settings and numeric values intact on language changes.
+-- Strong references retain GUI text bindings across Roblox garbage collection.
+-- They are cleared with the GUI; changing language only updates displayed text.
 local i18n = {
 	Language = "en",
-	Bindings = setmetatable({}, {__mode = "k"}) :: {[Instance]: string},
+	Bindings = {} :: {[Instance]: string},
 	OnChanged = nil :: (() -> ())?,
 	Russian = {
+		["KBAC CLIENT"] = "КЛИЕНТ КБАК",
+		["K"] = "К",
+		["RIVALS"] = "РИВАЛС",
+		["BloxStrike"] = "БлоксСтрайк",
+		["English"] = "Английский",
 		["AIM"] = "НАВЕДЕНИЕ",
 		["ESP"] = "ПОДСВЕТКА",
 		["NOCLIP"] = "СКВОЗЬ СТЕНЫ",
@@ -64,10 +70,10 @@ local i18n = {
 		["OTHER"] = "ДРУГОЕ",
 		["COMBAT"] = "БОЙ",
 		["VISUALS"] = "ВИЗУАЛ",
-		["Functions designed for RIVALS"] = "Функции для RIVALS",
-		["Functions designed for BloxStrike"] = "Функции для BloxStrike",
+		["Functions designed for RIVALS"] = "Функции для Ривалс",
+		["Functions designed for BloxStrike"] = "Функции для БлоксСтрайк",
 		["Interface and general settings"] = "Интерфейс и общие настройки",
-		["Shooter Control Center · RIVALS"] = "Панель управления · RIVALS",
+		["Shooter Control Center · RIVALS"] = "Панель управления · Ривалс",
 		["No functions added yet"] = "Пока нет функций",
 		["No combat functions added yet"] = "Боевые функции пока не добавлены",
 		["No other functions added yet"] = "Другие функции пока не добавлены",
@@ -164,7 +170,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "rivals-360-movement-1")
+gui:SetAttribute("ClientBuild", "ui-language-snow-2")
 gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -291,6 +297,81 @@ reflectionFade.Transparency = NumberSequence.new({
 	NumberSequenceKeypoint.new(1, 1),
 })
 reflectionFade.Parent = reflection
+
+-- Decorative snow stays behind the controls and never handles input.
+local function setupMenuSnow()
+	local layer = Instance.new("Frame")
+	layer.Name = "SnowBackground"
+	layer.Size = UDim2.fromScale(1, 1)
+	layer.BackgroundTransparency = 1
+	layer.BorderSizePixel = 0
+	layer.ClipsDescendants = true
+	layer.Active = false
+	layer.Selectable = false
+	layer.ZIndex = 12
+	layer.Parent = panel
+	local flakes = {}
+	local function line(parent: Instance, y: number, length: number, rotation: number, alpha: number)
+		local item = Instance.new("Frame")
+		item.AnchorPoint = Vector2.new(0.5, 0.5)
+		item.Position = UDim2.fromScale(0.5, y)
+		item.Size = UDim2.fromOffset(1, length)
+		item.Rotation = rotation
+		item.BackgroundColor3 = Color3.fromRGB(220, 236, 255)
+		item.BackgroundTransparency = alpha
+		item.BorderSizePixel = 0
+		item.Active = false
+		item.Selectable = false
+		item.ZIndex = 12
+		item.Parent = parent
+		return item
+	end
+	for index = 1, 24 do
+		local size = 7 + (index % 6) * 2
+		local flake = Instance.new("Frame")
+		flake.Name = "Snowflake"
+		flake.AnchorPoint = Vector2.new(0.5, 0.5)
+		flake.Size = UDim2.fromOffset(size, size)
+		flake.BackgroundTransparency = 1
+		flake.Active = false
+		flake.Selectable = false
+		flake.ZIndex = 12
+		flake.Parent = layer
+		local alpha = 0.44 + (index % 4) * 0.09
+		for axis = 0, 2 do
+			local stem = line(flake, 0.5, size, axis * 60, alpha)
+			if size >= 13 then
+				for _, y in ipairs({0.22, 0.78}) do
+					line(stem, y, size * 0.32, -45, alpha)
+					line(stem, y, size * 0.32, 45, alpha)
+				end
+			end
+		end
+		local x, y = (index * 0.61803398875) % 1, (index * 0.38196601125) % 1
+		flake.Position = UDim2.fromScale(x, y)
+		table.insert(flakes, {Object = flake, X = x, Y = y, Phase = index * 2.4,
+			Speed = 0.035 + (index % 7) * 0.006, Spin = (index % 2 == 0 and 1 or -1) * (5 + index % 5)})
+	end
+	local elapsed = 0
+	local connection = RunService.RenderStepped:Connect(function(deltaTime: number)
+		if not panel.Visible then return end
+		local step = math.clamp(deltaTime, 0, 0.05)
+		elapsed += step
+		for _, flake in ipairs(flakes) do
+			flake.Y += flake.Speed * step
+			if flake.Y > 1.05 then flake.Y -= 1.1 end
+			local drift = math.sin(elapsed * 0.65 + flake.Phase) * 0.025
+			flake.Object.Position = UDim2.fromScale(flake.X + drift, flake.Y)
+			flake.Object.Rotation = (elapsed * flake.Spin + flake.Phase * 20) % 360
+		end
+	end)
+	gui.Destroying:Connect(function()
+		connection:Disconnect()
+		table.clear(flakes)
+	end)
+end
+setupMenuSnow()
+-- END MENU SNOW
 
 local title = Instance.new("TextLabel")
 title.Name = "Title"
@@ -3072,7 +3153,7 @@ local function setupLanguagePage()
 		button.Position = UDim2.new((index - 1) * 0.5, if index == 1 then 14 else 4, 0, 80)
 		button.Size = UDim2.new(0.5, -18, 0, 42)
 		button.BorderSizePixel = 0
-		-- Language names stay in their own language, so either choice is easy to find.
+		-- Display names are localized; stable language IDs remain en and ru.
 		i18n.Text(button, language.Name)
 		button.TextSize = 14
 		button.Font = Enum.Font.GothamSemibold
