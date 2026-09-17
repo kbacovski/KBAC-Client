@@ -60,9 +60,9 @@ local i18n = {
 		["Adjust walking speed"] = "Настройка скорости передвижения",
 		["WALK SPEED"] = "СКОРОСТЬ ХОДЬБЫ",
 		["FLIGHT"] = "ПОЛЁТ",
-		["Fly with movement controls and up / down"] = "Полёт с управлением вверх и вниз",
+		["Fly in the direction you look"] = "Полёт в направлении взгляда",
 		["FLIGHT SPEED"] = "СКОРОСТЬ ПОЛЁТА",
-		["Move normally. Space / E: up. Ctrl / Q: down. Touch: arrow buttons."] = "Обычное движение. Пробел — вверх, левый Контрол — вниз. На телефоне — стрелки.",
+		["Forward / backward follows the camera. Release movement to hover."] = "Вперёд и назад — по направлению камеры. Отпусти управление, чтобы зависнуть.",
 		["TELEPORT"] = "ТЕЛЕПОРТ",
 		["Move next to another player"] = "Перемещение к другому игроку",
 		["TELEPORT MODE"] = "РЕЖИМ ТЕЛЕПОРТА",
@@ -75,7 +75,6 @@ local i18n = {
 		["Choose a player first"] = "Сначала выбери игрока",
 		["Selected player unavailable"] = "Выбранный игрок недоступен",
 		["Character unavailable"] = "Персонаж недоступен",
-		["Teleported"] = "Телепортация выполнена",
 		["SHOW ON SCREEN"] = "КНОПКА НА ЭКРАНЕ",
 		["OPEN"] = "ОТКРЫТЬ",
 		["JUMP"] = "ПРЫЖКИ",
@@ -194,7 +193,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "other-movement-tools-1")
+gui:SetAttribute("ClientBuild", "camera-flight-2")
 gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -2357,7 +2356,7 @@ end)
 local function setupMovement()
 	local api = {
 		Config = {Speed = false, SpeedValue = 32, Flight = false, FlightSpeed = 60, Noclip = false, InfiniteJump = false},
-		Listeners = {}, Vertical = 0, TeleportMode = "Nearest", SelectedPlayer = nil :: Player?,
+		Listeners = {}, TeleportMode = "Nearest", SelectedPlayer = nil :: Player?,
 	}
 	local config: any = api.Config
 	local connections = {}
@@ -2452,15 +2451,20 @@ local function setupMovement()
 		end
 		humanoid.PlatformStand = true
 		local direction = Vector3.zero
-		if not panel.Visible and not UserInputService:GetFocusedTextBox() then
-			local vertical = api.Vertical
-			if UserInputService:IsKeyDown(Enum.KeyCode.Space) or UserInputService:IsKeyDown(Enum.KeyCode.E) then vertical += 1 end
-			if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.Q) then vertical -= 1 end
-			direction = humanoid.MoveDirection + Vector3.new(0, math.clamp(vertical, -1, 1), 0)
-			if direction.Magnitude > 1 then direction = direction.Unit end
+		local camera = workspace.CurrentCamera
+		if camera and not panel.Visible and not UserInputService:GetFocusedTextBox() then
+			-- Standard keyboard, touch and gamepad controls provide world-space walking input.
+			-- Recover forward/strafe in the camera's horizontal plane, then apply its full pitch.
+			local right = Vector3.new(camera.CFrame.RightVector.X, 0, camera.CFrame.RightVector.Z)
+			if right.Magnitude > 0.001 then
+				right = right.Unit
+				local forward = Vector3.new(right.Z, 0, -right.X)
+				local move = humanoid.MoveDirection
+				direction = camera.CFrame.LookVector * move:Dot(forward) + camera.CFrame.RightVector * move:Dot(right)
+				if direction.Magnitude > 1 then direction = direction.Unit end
+			end
 		end
 		flight.Velocity.VectorVelocity = direction * config.FlightSpeed
-		local camera = workspace.CurrentCamera
 		local look = if camera then camera.CFrame.LookVector else root.CFrame.LookVector
 		local flat = Vector3.new(look.X, 0, look.Z)
 		if flat.Magnitude > 0.001 then flight.Orientation.CFrame = CFrame.lookAt(Vector3.zero, flat) end
@@ -2473,7 +2477,6 @@ local function setupMovement()
 		elseif type(value) ~= "boolean" then return end
 		config[key] = value
 		if not config.InfiniteJump then lastJump = -math.huge end
-		if not config.Flight then api.Vertical = 0 end
 		api.Step()
 		api.Notify()
 	end
@@ -2529,7 +2532,7 @@ local function setupMovement()
 		root.AssemblyLinearVelocity = Vector3.new(velocity.X, speed, velocity.Z)
 	end))
 	table.insert(connections, player.CharacterRemoving:Connect(function(model)
-		retired = model stopFlight() restoreSpeed() restoreCollisions() api.Vertical = 0 lastJump = -math.huge
+		retired = model stopFlight() restoreSpeed() restoreCollisions() lastJump = -math.huge
 	end))
 	gui.Destroying:Connect(function()
 		stopped = true
@@ -3433,7 +3436,12 @@ local function setupOtherTools()
 		end
 	end
 	local function activate(key)
-		if key == "Teleport" then notify(movement.Teleport())
+		if key == "Teleport" then
+			local result = movement.Teleport()
+			if result == "Teleported" then
+				toastVersion += 1
+				toast.Visible = false
+			else notify(result) end
 		else movement.Set(key, not (movement.Config :: any)[key]) end
 	end
 	local function addCard(key, title, description, order, height, quickText)
@@ -3530,9 +3538,9 @@ local function setupOtherTools()
 	end
 	local speed = addCard("Speed", "SPEED", "Adjust walking speed", 2, 112, "SPEED")
 	slider(speed, "SpeedValue", "WALK SPEED")
-	local flight = addCard("Flight", "FLIGHT", "Fly with movement controls and up / down", 3, 150, "FLIGHT")
+	local flight = addCard("Flight", "FLIGHT", "Fly in the direction you look", 3, 150, "FLIGHT")
 	slider(flight, "FlightSpeed", "FLIGHT SPEED")
-	local hint = label(flight.Settings, "FlightHelp", "Move normally. Space / E: up. Ctrl / Q: down. Touch: arrow buttons.", 62)
+	local hint = label(flight.Settings, "FlightHelp", "Forward / backward follows the camera. Release movement to hover.", 62)
 	hint.TextWrapped = true hint.Size = UDim2.new(1, -24, 0, 40)
 	addCard("Noclip", "NOCLIP", "Walk through walls", 4, 52, "NOCLIP")
 	addCard("InfiniteJump", "INFINITE JUMP", "Jump again while in the air", 5, 52, "JUMP")
@@ -3589,26 +3597,9 @@ local function setupOtherTools()
 		if movement.SelectedPlayer == other then movement.SelectedPlayer = nil end
 		task.defer(function() if gui.Parent then rebuildPlayers(true) end end)
 	end))
-	local flightControls = Instance.new("Frame")
-	flightControls.Name = "FlightControls" flightControls.AnchorPoint = Vector2.new(0.5, 1)
-	flightControls.Position = UDim2.new(0.5, 0, 1, -80) flightControls.Size = UDim2.fromOffset(124, 54)
-	flightControls.BackgroundTransparency = 1 flightControls.ZIndex = 60 flightControls.Visible = false flightControls.Parent = gui
-	local held = {}
-	for index, entry in ipairs({{Name = "Up", Text = "↑", Direction = 1}, {Name = "Down", Text = "↓", Direction = -1}}) do
-		local control = button(flightControls, entry.Name, entry.Text, UDim2.fromOffset((index - 1) * 66, 0), UDim2.fromOffset(58, 54))
-		control.ZIndex = 61 control.TextSize = 26
-		control.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then held[input] = entry.Direction end
-		end)
-	end
-	table.insert(connections, UserInputService.InputEnded:Connect(function(input) held[input] = nil end))
-	table.insert(connections, UserInputService.WindowFocusReleased:Connect(function() table.clear(held) movement.Vertical = 0 end))
 	local scanClock = 0
 	table.insert(connections, RunService.RenderStepped:Connect(function(dt)
 		placeQuickButtons()
-		flightControls.Visible = movement.Config.Flight and not panel.Visible
-		if not flightControls.Visible then table.clear(held) end
-		local vertical = 0 for _, direction in pairs(held) do vertical += direction end movement.Vertical = math.clamp(vertical, -1, 1)
 		scanClock += dt
 		if scanClock >= 0.5 then scanClock = 0 if expanded == teleport then rebuildPlayers(false) end end
 	end))
@@ -3619,12 +3610,9 @@ local function setupOtherTools()
 				i18n.Text(entry.Toggle, if active then "ON" else "OFF") paint(entry.Toggle, active) paint(entry.Quick, active)
 			end
 		end
-		if not movement.Config.Flight then table.clear(held) movement.Vertical = 0 end
-		flightControls.Visible = movement.Config.Flight and not panel.Visible
 	end)
 	gui.Destroying:Connect(function()
 		for _, connection in ipairs(connections) do connection:Disconnect() end
-		table.clear(held)
 	end)
 end
 setupOtherTools()
