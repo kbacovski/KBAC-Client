@@ -74,7 +74,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "hitbox-1")
+gui:SetAttribute("ClientBuild", "hitbox-2")
 gui:SetAttribute("AimStatus", "Временно недоступен")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -220,7 +220,7 @@ subtitle.Name = "Subtitle"
 subtitle.Position = UDim2.fromOffset(29, 50)
 subtitle.Size = UDim2.new(1, -100, 0, 20)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "Shooter Control Center"
+subtitle.Text = "Shooter Control Center · HITBOX"
 subtitle.TextColor3 = COLORS.muted
 subtitle.TextSize = 13
 subtitle.Font = Enum.Font.GothamMedium
@@ -462,7 +462,7 @@ for id, record in pairs(tabButtons) do
 		switchTab(id)
 	end)
 end
-switchTab("RIVALS")
+switchTab("BloxStrike")
 
 --============================================================
 -- BLOXSTRIKE ESP
@@ -473,7 +473,11 @@ switchTab("RIVALS")
 pages["BloxStrike"].EmptyText.Visible = false
 
 local bloxModules = pages["BloxStrike"].Modules
-local selectedBloxCategory = "Visuals"
+-- The game tab already names this page. Its repeated header pushed the
+-- second Combat card almost entirely below the visible scrolling area.
+local bloxHeader = bloxModules:FindFirstChild("PageHeader")
+if bloxHeader and bloxHeader:IsA("Frame") then bloxHeader.Visible = false end
+local selectedBloxCategory = "Combat"
 local categoryButtons: {[string]: {Button: TextButton, Stroke: UIStroke}} = {}
 
 local categoryBar = Instance.new("Frame")
@@ -1444,7 +1448,7 @@ aimCard.Size = UDim2.new(1, -10, 0, 68)
 aimCard.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
 aimCard.BackgroundTransparency = 0.65
 aimCard.BorderSizePixel = 0
-aimCard.LayoutOrder = 2
+aimCard.LayoutOrder = 3
 aimCard.Visible = false
 aimCard.ZIndex = 17
 aimCard.Parent = bloxModules
@@ -1477,7 +1481,7 @@ hitboxCard.BackgroundColor3 = Color3.fromRGB(44, 54, 71)
 hitboxCard.BackgroundTransparency = 0.5
 hitboxCard.BorderSizePixel = 0
 hitboxCard.ClipsDescendants = true
-hitboxCard.LayoutOrder = 3
+hitboxCard.LayoutOrder = 2
 hitboxCard.Visible = false
 hitboxCard.ZIndex = 17
 hitboxCard.Parent = bloxModules
@@ -1643,6 +1647,7 @@ end)
 
 local function switchBloxCategory(name: string)
 	selectedBloxCategory = name
+	bloxModules.CanvasPosition = Vector2.zero
 	card.Visible = name == "Visuals"
 	tracerCard.Visible = name == "Visuals"
 	aimCard.Visible = name == "Combat"
@@ -1666,7 +1671,7 @@ for categoryName, record in pairs(categoryButtons) do
 		switchBloxCategory(categoryName)
 	end)
 end
-switchBloxCategory("Visuals")
+switchBloxCategory("Combat")
 
 toggle.Activated:Connect(function()
 	espEnabled = not espEnabled
