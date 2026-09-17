@@ -74,7 +74,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "hitbox-2")
+gui:SetAttribute("ClientBuild", "hitbox-3")
 gui:SetAttribute("AimStatus", "Временно недоступен")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -607,6 +607,8 @@ local hitbox = {
 	Enabled = false,
 	Multiplier = 3,
 	Originals = {} :: {[BasePart]: HitboxHeadState},
+	InactiveModels = setmetatable({}, {__mode = "k"}) :: {[Model]: boolean},
+	Characters = {} :: {[Player]: Model},
 }
 
 function hitbox.RestoreHead(head: BasePart)
@@ -634,6 +636,43 @@ function hitbox.RestoreModel(model: Model)
 	end
 end
 
+function hitbox.RetireModel(model: Model)
+	-- A corpse may keep its player name and stay in Workspace after removal.
+	-- Keep it excluded so the next heartbeat cannot enlarge it again.
+	hitbox.InactiveModels[model] = true
+	hitbox.RestoreModel(model)
+end
+
+function hitbox.CharacterAdded(owner: Player, model: Model)
+	local previous = hitbox.Characters[owner]
+	if previous and previous ~= model then hitbox.RetireModel(previous) end
+	hitbox.Characters[owner] = model
+	hitbox.InactiveModels[model] = nil
+end
+
+function hitbox.CharacterRemoving(owner: Player, model: Model)
+	hitbox.RetireModel(model)
+	if hitbox.Characters[owner] == model then hitbox.Characters[owner] = nil end
+end
+
+function hitbox.HasDeathSignal(instance: Instance): boolean
+	-- Custom characters can expose state without a Humanoid. Missing values
+	-- are unknown, not a death signal; only explicit values disable scaling.
+	for _, name in ipairs({"Dead", "IsDead", "Alive", "IsAlive", "Health", "CurrentHealth", "State"}) do
+		local function isDead(value): boolean
+			if name == "Dead" or name == "IsDead" then return value == true end
+			if name == "Alive" or name == "IsAlive" then return value == false end
+			if name == "Health" or name == "CurrentHealth" then return type(value) == "number" and value <= 0 end
+			return type(value) == "string" and (string.lower(value) == "dead" or string.lower(value) == "eliminated")
+		end
+		if isDead(instance:GetAttribute(name)) then return true end
+		local child = instance:FindFirstChild(name)
+		if child and (child:IsA("BoolValue") or child:IsA("NumberValue") or child:IsA("IntValue") or child:IsA("StringValue"))
+			and isDead(child.Value) then return true end
+	end
+	return false
+end
+
 function hitbox.FindHead(model: Model): BasePart?
 	local direct = model:FindFirstChild("Head")
 	if direct and direct:IsA("BasePart") then return direct end
@@ -655,11 +694,16 @@ function hitbox.FindHead(model: Model): BasePart?
 end
 
 function hitbox.IsPlayerTarget(model: Model, currentPlayers: {Player}): boolean
-	if isLocalPlayerModel(model) or not model:IsDescendantOf(workspace) then return false end
+	if hitbox.InactiveModels[model] or isLocalPlayerModel(model) or not model:IsDescendantOf(workspace)
+		or hitbox.HasDeathSignal(model) then return false end
 	local ownerId = model:GetAttribute("UserId") or model:GetAttribute("PlayerUserId")
 	for _, other in ipairs(currentPlayers) do
 		if other ~= player and (other.Character == model or model.Name == other.Name
-			or model.Name == other.DisplayName or ownerId == other.UserId) then return true end
+			or model.Name == other.DisplayName or ownerId == other.UserId) then
+			-- Prefer the current character over an old model with the same name.
+			if other.Character and other.Character ~= model then continue end
+			if not hitbox.HasDeathSignal(other) then return true end
+		end
 	end
 	return false
 end
@@ -889,6 +933,7 @@ local function trackModel(model: Model)
 	local humanoid = model:FindFirstChildWhichIsA("Humanoid")
 	if humanoid then
 		table.insert(connections, humanoid.Died:Connect(function()
+			hitbox.RetireModel(model)
 			destroyTracked(model)
 		end))
 	end
@@ -1710,15 +1755,40 @@ local function scheduleESPRescans()
 	end)
 end
 
+local playerConnections: {[Player]: {RBXScriptConnection}} = {}
+local function unhookPlayer(otherPlayer: Player)
+	local connections = playerConnections[otherPlayer]
+	if connections then
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+	end
+	playerConnections[otherPlayer] = nil
+	local character = hitbox.Characters[otherPlayer] or otherPlayer.Character
+	if character then hitbox.CharacterRemoving(otherPlayer, character) end
+end
+
 local function hookPlayer(otherPlayer: Player)
-	otherPlayer:GetPropertyChangedSignal("Team"):Connect(scheduleESPRescans)
-	otherPlayer.CharacterAdded:Connect(scheduleESPRescans)
+	if playerConnections[otherPlayer] then return end
+	playerConnections[otherPlayer] = {
+		otherPlayer:GetPropertyChangedSignal("Team"):Connect(scheduleESPRescans),
+		otherPlayer.CharacterAdded:Connect(function(model: Model)
+			hitbox.CharacterAdded(otherPlayer, model)
+			scheduleESPRescans()
+		end),
+		otherPlayer.CharacterRemoving:Connect(function(model: Model)
+			hitbox.CharacterRemoving(otherPlayer, model)
+			scheduleESPRescans()
+		end),
+	}
+	if otherPlayer.Character then hitbox.CharacterAdded(otherPlayer, otherPlayer.Character) end
 	scheduleESPRescans()
 end
 
 for _, otherPlayer in ipairs(Players:GetPlayers()) do hookPlayer(otherPlayer) end
-Players.PlayerAdded:Connect(hookPlayer)
-Players.PlayerRemoving:Connect(scheduleESPRescans)
+table.insert(hitboxConnections, Players.PlayerAdded:Connect(hookPlayer))
+table.insert(hitboxConnections, Players.PlayerRemoving:Connect(function(otherPlayer: Player)
+	unhookPlayer(otherPlayer)
+	scheduleESPRescans()
+end))
 
 workspace.ChildAdded:Connect(function(child: Instance)
 	if child.Name == "Characters" then
@@ -2097,6 +2167,7 @@ gui.Destroying:Connect(function()
 	espHeartbeatConnection:Disconnect()
 	visualRenderConnection:Disconnect()
 	for _, connection in ipairs(hitboxConnections) do connection:Disconnect() end
+	for otherPlayer in pairs(playerConnections) do unhookPlayer(otherPlayer) end
 	hitbox.RestoreAll()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
 	if effectsFolder.Parent then effectsFolder:Destroy() end
