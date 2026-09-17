@@ -13,7 +13,13 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local oldGui = playerGui:FindFirstChild("KBACClient")
-if oldGui then oldGui:Destroy() end
+if oldGui then
+	local previousAimBinding = oldGui:GetAttribute("AimRenderStepName")
+	pcall(function()
+		RunService:UnbindFromRenderStep(if type(previousAimBinding) == "string" then previousAimBinding else "KBACClientAim")
+	end)
+	oldGui:Destroy()
+end
 
 local oldAimOverlay = playerGui:FindFirstChild("KBACAimOverlay")
 if oldAimOverlay then oldAimOverlay:Destroy() end
@@ -1703,6 +1709,21 @@ local function getBodyPart(model: Model, ...: string): BasePart?
 	return nil
 end
 
+local function getAimHeadPart(model: Model): BasePart?
+	local head = getBodyPart(model, "Head")
+	if head then return head end
+	local highlightedParts = trackedPlayerParts[model]
+	if not highlightedParts then return nil end
+	local highestPart: BasePart? = nil
+	for part in pairs(highlightedParts) do
+		if part.Parent and part:IsDescendantOf(model) then
+			if string.find(string.lower(part.Name), "head", 1, true) then return part end
+			if not highestPart or part.Position.Y > highestPart.Position.Y then highestPart = part end
+		end
+	end
+	return highestPart
+end
+
 local function getSkeletonPairs(model: Model)
 	local pairsList = {}
 	local head = getBodyPart(model, "Head")
@@ -1843,7 +1864,9 @@ local function faceAimCharacter(root: BasePart, humanoid: Humanoid?, character: 
 	root.AssemblyAngularVelocity = Vector3.zero
 end
 
-RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, function()
+local aimRenderStepName = "KBACClientAim_" .. game:GetService("HttpService"):GenerateGUID(false)
+gui:SetAttribute("AimRenderStepName", aimRenderStepName)
+RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, function()
 	if not aimEnabled then return end
 
 	local camera = workspace.CurrentCamera
@@ -1866,7 +1889,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 	if lockedAimModel then
 		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
 		if lockedAimModel.Parent and aimCandidates[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
-			targetPart = getBodyPart(lockedAimModel, "Head")
+			targetPart = getAimHeadPart(lockedAimModel)
 		else
 			lockedAimModel = nil
 		end
@@ -1883,7 +1906,7 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 			if model.Parent and not isLocalPlayerModel(model) then
 				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 				if not humanoid or humanoid.Health > 0 then
-					local head = getBodyPart(model, "Head")
+					local head = getAimHeadPart(model)
 					local highlightedParts = trackedPlayerParts[model]
 					if head and highlightedParts then
 						for part in pairs(highlightedParts) do
@@ -1981,7 +2004,7 @@ end)
 
 local aimSimulationConnection = RunService.PreSimulation:Connect(function()
 	if not aimEnabled or not lockedAimModel or not trackedHighlights[lockedAimModel] then return end
-	local head = getBodyPart(lockedAimModel, "Head")
+	local head = getAimHeadPart(lockedAimModel)
 	local camera = workspace.CurrentCamera
 	if not head or not camera then return end
 	local root, humanoid, character = getLocalAimRoot()
@@ -2226,7 +2249,7 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
 	aimSimulationConnection:Disconnect()
-	RunService:UnbindFromRenderStep("KBACClientAim")
+	RunService:UnbindFromRenderStep(aimRenderStepName)
 	if aimOverlayGui.Parent then aimOverlayGui:Destroy() end
 	restoreAimCameraControl()
 	restoreAimAutoRotate()
