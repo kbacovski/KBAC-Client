@@ -74,7 +74,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "hitbox-3")
+gui:SetAttribute("ClientBuild", "hitbox-4")
 gui:SetAttribute("AimStatus", "Временно недоступен")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -611,17 +611,56 @@ local hitbox = {
 	Characters = {} :: {[Player]: Model},
 }
 
+function hitbox.ClearHeadBackup(head: BasePart)
+	for _, name in ipairs({"Size", "CanCollide", "CanQuery", "Massless"}) do
+		head:SetAttribute("KBAC_HitboxBase" .. name, nil)
+	end
+end
+
+function hitbox.RestoreInherited(instance: Instance)
+	-- A ragdoll can be cloned before the live model is removed. Its parts
+	-- are new instances, so the Originals table cannot identify them. Keep
+	-- the baseline on the modified parts as well, so Clone carries it over.
+	if instance:IsA("BasePart") then
+		if hitbox.Originals[instance] then return end
+		local size = instance:GetAttribute("KBAC_HitboxBaseSize")
+		if typeof(size) ~= "Vector3" then return end
+		instance.Size = size
+		for _, property in ipairs({"CanCollide", "CanQuery", "Massless"}) do
+			local saved = instance:GetAttribute("KBAC_HitboxBase" .. property)
+			if type(saved) == "boolean" then (instance :: any)[property] = saved end
+		end
+		hitbox.ClearHeadBackup(instance)
+		for _, child in ipairs(instance:GetChildren()) do
+			if child:IsA("SpecialMesh") then hitbox.RestoreInherited(child) end
+		end
+	elseif instance:IsA("SpecialMesh") then
+		local parent = instance.Parent
+		if parent and parent:IsA("BasePart") then
+			local original = hitbox.Originals[parent]
+			if original and original.Mesh == instance then return end
+		end
+		local scale = instance:GetAttribute("KBAC_HitboxBaseScale")
+		if typeof(scale) == "Vector3" then
+			instance.Scale = scale
+			instance:SetAttribute("KBAC_HitboxBaseScale", nil)
+		end
+	end
+end
+
 function hitbox.RestoreHead(head: BasePart)
 	local original = hitbox.Originals[head]
 	if not original then return end
-	if head.Parent then
-		head.Size = original.Size
-		head.CanCollide = original.CanCollide
-		head.CanQuery = original.CanQuery
-		head.Massless = original.Massless
-	end
-	if original.Mesh and original.Mesh.Parent and original.MeshScale then
+	-- A detached head may be reparented into a corpse later. Restore it even
+	-- while Parent is nil rather than discarding its only saved baseline.
+	head.Size = original.Size
+	head.CanCollide = original.CanCollide
+	head.CanQuery = original.CanQuery
+	head.Massless = original.Massless
+	hitbox.ClearHeadBackup(head)
+	if original.Mesh and original.MeshScale then
 		original.Mesh.Scale = original.MeshScale
+		original.Mesh:SetAttribute("KBAC_HitboxBaseScale", nil)
 	end
 	hitbox.Originals[head] = nil
 end
@@ -711,18 +750,30 @@ end
 function hitbox.Apply(head: BasePart, model: Model)
 	local original = hitbox.Originals[head]
 	if not original then
+		-- If a cloned character becomes a new live character, normalize it
+		-- before saving its baseline to avoid multiplying an enlarged size.
+		hitbox.RestoreInherited(head)
 		original = {
 			Model = model, Size = head.Size,
 			CanCollide = head.CanCollide, CanQuery = head.CanQuery, Massless = head.Massless,
 		}
 		hitbox.Originals[head] = original
+		head:SetAttribute("KBAC_HitboxBaseSize", original.Size)
+		head:SetAttribute("KBAC_HitboxBaseCanCollide", original.CanCollide)
+		head:SetAttribute("KBAC_HitboxBaseCanQuery", original.CanQuery)
+		head:SetAttribute("KBAC_HitboxBaseMassless", original.Massless)
 	end
 	local mesh = head:FindFirstChildWhichIsA("SpecialMesh")
 	if mesh and mesh.MeshType ~= Enum.MeshType.FileMesh then mesh = nil end
 	if original.Mesh ~= mesh then
-		if original.Mesh and original.Mesh.Parent and original.MeshScale then original.Mesh.Scale = original.MeshScale end
+		if original.Mesh and original.MeshScale then
+			original.Mesh.Scale = original.MeshScale
+			original.Mesh:SetAttribute("KBAC_HitboxBaseScale", nil)
+		end
+		if mesh then hitbox.RestoreInherited(mesh) end
 		original.Mesh = mesh
 		original.MeshScale = if mesh then mesh.Scale else nil
+		if mesh then mesh:SetAttribute("KBAC_HitboxBaseScale", original.MeshScale) end
 	end
 	-- File meshes have an independent visual scale; MeshParts follow Size.
 	local targetSize = original.Size * hitbox.Multiplier
@@ -745,7 +796,8 @@ function hitbox.Sync(): number
 	local currentPlayers = Players:GetPlayers()
 	local count = 0
 	for model in pairs(trackedHighlights) do
-		if model.Parent and hitbox.IsPlayerTarget(model, currentPlayers) then
+		if model.Parent and charactersFolder and model:IsDescendantOf(charactersFolder)
+			and hitbox.IsPlayerTarget(model, currentPlayers) then
 			local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 			if not humanoid or humanoid.Health > 0 then
 				local head = hitbox.FindHead(model)
@@ -1799,6 +1851,9 @@ end)
 
 workspace.DescendantAdded:Connect(function(descendant: Instance)
 	if not gui.Parent then return end
+	-- Corpse models usually live outside Characters and are never tracked by
+	-- ESP. Normalize inherited hitbox changes before the Characters filter.
+	hitbox.RestoreInherited(descendant)
 	if charactersFolder and descendant:IsDescendantOf(charactersFolder) then
 		local cursor: Instance? = descendant
 		while cursor and cursor ~= charactersFolder do
@@ -1812,6 +1867,9 @@ workspace.DescendantAdded:Connect(function(descendant: Instance)
 		scheduleESPRescans()
 	end
 end)
+
+-- Recover marked copies already present when this version is reloaded.
+for _, descendant in ipairs(workspace:GetDescendants()) do hitbox.RestoreInherited(descendant) end
 
 workspace.DescendantRemoving:Connect(function(descendant: Instance)
 	if descendant:IsA("Model") and trackedHighlights[descendant] then destroyTracked(descendant) end
