@@ -74,7 +74,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("AimBuild", "rig-sync-9")
+gui:SetAttribute("AimBuild", "workspace-rig-10")
 
 local blur = Instance.new("BlurEffect")
 blur.Name = "KBACClientBlur"
@@ -1892,11 +1892,18 @@ local function getLocalAimRigs(): ({LocalAimRig}, BasePart?)
 	end
 
 	addCharacter(player.Character)
+	-- The local avatar can live directly under Workspace while opponents live
+	-- in Characters. Its exact account name identifies it without guessing by distance.
+	local workspaceCharacter = workspace:FindFirstChild(player.Name)
+	if workspaceCharacter and workspaceCharacter:IsA("Model") then
+		addCharacter(workspaceCharacter)
+	end
 	addCharacter(localGameCharacter)
 	for _, model in ipairs(localAimModels) do addCharacter(model) end
 	local followRoot: BasePart? = if rigs[1] then rigs[1].Root else nil
 	for _, rig in ipairs(rigs) do
 		if rig.Character == localGameCharacter then followRoot = rig.Root break end
+		if rig.Character == workspaceCharacter then followRoot = rig.Root end
 	end
 	-- Parent pivots must be applied before independent nested avatars.
 	local function depth(model: Model): number
@@ -1918,7 +1925,7 @@ local function faceAimCharacters(rigs: {LocalAimRig}, lookDirection: Vector3)
 	-- Keep a local report for troubleshooting; this does not send any data.
 	if os.clock() >= aimCharacterState.NextReportAt then
 		aimCharacterState.NextReportAt = os.clock() + 1
-		local lines = {"Build: rig-sync-9", "Local rigs: " .. #rigs}
+		local lines = {"Build: workspace-rig-10", "Local rigs: " .. #rigs}
 		local function angle(part: BasePart): number
 			local facing = Vector3.new(part.CFrame.LookVector.X, 0, part.CFrame.LookVector.Z)
 			if facing.Magnitude < 0.001 then return -1 end
