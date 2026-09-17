@@ -790,7 +790,12 @@ local function scanCharacters()
 	for _, descendant in ipairs(charactersFolder:GetDescendants()) do
 		if descendant:IsA("Model") then
 			if isLocalPlayerModel(descendant) then
-				local directRoot = descendant:FindFirstChild("HumanoidRootPart") or descendant:FindFirstChild("RootPart") or descendant:FindFirstChild("Root") or descendant.PrimaryPart
+				local humanoid = descendant:FindFirstChildWhichIsA("Humanoid")
+				local controller = descendant:FindFirstChildWhichIsA("ControllerManager")
+				local directRoot = (controller and controller.RootPart) or (humanoid and humanoid.RootPart)
+					or descendant:FindFirstChild("HumanoidRootPart") or descendant:FindFirstChild("RootPart")
+					or descendant:FindFirstChild("Root") or descendant.PrimaryPart
+					or descendant:FindFirstChild("LowerTorso") or descendant:FindFirstChild("Torso")
 				if directRoot and directRoot:IsA("BasePart") then
 					local score = if descendant.Name == player.Name then 2 else 0
 					for _, bodyPart in ipairs(descendant:GetDescendants()) do
@@ -1331,8 +1336,10 @@ local aimEnabled = false
 local aimExpanded = false
 local aimRadius = 120
 local aimColor = Color3.fromRGB(255, 70, 82)
-local savedAimHumanoid: Humanoid? = nil
-local savedAutoRotate: boolean? = nil
+local aimCharacterState = {
+	Humanoids = {} :: {[Humanoid]: boolean},
+	Controllers = {} :: {[ControllerManager]: Vector3},
+}
 local savedAimCamera: Camera? = nil
 local savedAimCameraType = Enum.CameraType.Custom
 local savedAimMouseBehavior = Enum.MouseBehavior.Default
@@ -1341,12 +1348,15 @@ local lockedAimModel: Model? = nil
 local aimLockStartedAt = 0
 local aimMouseTravel = 0
 
-local function restoreAimAutoRotate()
-	if savedAimHumanoid and savedAimHumanoid.Parent and savedAutoRotate ~= nil then
-		savedAimHumanoid.AutoRotate = savedAutoRotate
+local function restoreAimCharacterControl()
+	for humanoid, autoRotate in pairs(aimCharacterState.Humanoids) do
+		if humanoid.Parent then humanoid.AutoRotate = autoRotate end
 	end
-	savedAimHumanoid = nil
-	savedAutoRotate = nil
+	for controller, facingDirection in pairs(aimCharacterState.Controllers) do
+		if controller.Parent then controller.FacingDirection = facingDirection end
+	end
+	table.clear(aimCharacterState.Humanoids)
+	table.clear(aimCharacterState.Controllers)
 end
 
 local function restoreAimCameraControl()
@@ -1577,7 +1587,7 @@ local function setAimEnabled(shouldEnable: boolean)
 	if not aimEnabled then
 		lockedAimModel = nil
 		restoreAimCameraControl()
-		restoreAimAutoRotate()
+		restoreAimCharacterControl()
 	end
 end
 
@@ -1818,50 +1828,93 @@ local function hideTracerVisuals()
 	for _, arrow in pairs(tracerArrows) do arrow.Visible = false end
 end
 
-local function getLocalAimRoot(): (BasePart?, Humanoid?, Model?)
-	local function findRoot(character: Model): BasePart?
-		local root = character:FindFirstChild("HumanoidRootPart", true)
-		if root and root:IsA("BasePart") then return root end
+type LocalAimRig = {
+	Root: BasePart,
+	Character: Model,
+	Humanoid: Humanoid?,
+	Controller: ControllerManager?,
+}
+
+local function getLocalAimRigs(): {LocalAimRig}
+	local rigs: {LocalAimRig} = {}
+	local function addCharacter(character: Model?)
+		if not character or not character:IsDescendantOf(workspace) then return end
+		-- A parent container is not a separate character rig.
+		if player.Character and character ~= player.Character and character:IsAncestorOf(player.Character) then return end
 		local humanoid = character:FindFirstChildWhichIsA("Humanoid", true)
-		if humanoid and humanoid.RootPart then return humanoid.RootPart end
-		if character.PrimaryPart then return character.PrimaryPart end
-		return getBodyPart(character, "RootPart", "Root")
-	end
-	if localGameCharacter and localGameCharacter.Parent then
-		local gameRoot = findRoot(localGameCharacter)
-		if gameRoot then
-			return gameRoot, localGameCharacter:FindFirstChildWhichIsA("Humanoid", true), localGameCharacter
+		local controller = character:FindFirstChildWhichIsA("ControllerManager", true)
+		local root: BasePart? = nil
+		if controller and controller.RootPart and controller.RootPart:IsDescendantOf(character) then
+			root = controller.RootPart
+		elseif humanoid and humanoid.RootPart and humanoid.RootPart:IsDescendantOf(character) then
+			root = humanoid.RootPart
+		else
+			root = getBodyPart(character, "HumanoidRootPart", "RootPart", "Root")
+				or character.PrimaryPart
+				or getBodyPart(character, "LowerTorso", "Torso", "UpperTorso")
 		end
+		if not root then return end
+		for _, rig in ipairs(rigs) do
+			if rig.Root == root or rig.Character:IsAncestorOf(character) or character:IsAncestorOf(rig.Character) then return end
+		end
+		table.insert(rigs, {Root = root, Character = character, Humanoid = humanoid, Controller = controller})
 	end
-	local character = player.Character
-	local root = if character then findRoot(character) else nil
-	if root then
-		return root, character:FindFirstChildWhichIsA("Humanoid", true), character
-	end
-	if charactersFolder then
+
+	-- Some games render a separate avatar while Player.Character owns movement.
+	-- Rotate both, retaining the visible avatar as the camera-follow anchor.
+	addCharacter(localGameCharacter)
+	addCharacter(player.Character)
+	if (not localGameCharacter or not localGameCharacter:IsDescendantOf(workspace)) and charactersFolder then
 		for _, descendant in ipairs(charactersFolder:GetDescendants()) do
-			if descendant:IsA("Model") and isLocalPlayerModel(descendant) then
-				local localRoot = findRoot(descendant)
-				if localRoot then
-					return localRoot, descendant:FindFirstChildWhichIsA("Humanoid", true), descendant
-				end
-			end
+			if descendant:IsA("Model") and isLocalPlayerModel(descendant) then addCharacter(descendant) end
 		end
 	end
-	return nil, nil, nil
+	return rigs
 end
 
-local function faceAimCharacter(root: BasePart, humanoid: Humanoid?, character: Model?, lookDirection: Vector3)
+local function faceAimCharacters(rigs: {LocalAimRig}, lookDirection: Vector3)
 	local horizontalDirection = Vector3.new(lookDirection.X, 0, lookDirection.Z)
 	if horizontalDirection.Magnitude < 0.001 then return end
-	if humanoid then humanoid.AutoRotate = false end
-	local desiredRoot = CFrame.lookAt(root.Position, root.Position + horizontalDirection.Unit)
-	if character and character.Parent then
+	local direction = horizontalDirection.Unit
+	local activeHumanoids: {[Humanoid]: boolean} = {}
+	local activeControllers: {[ControllerManager]: boolean} = {}
+	for _, rig in ipairs(rigs) do
+		local root, character = rig.Root, rig.Character
+		if not root:IsDescendantOf(character) or not character:IsDescendantOf(workspace) then continue end
+		local humanoid, controller = rig.Humanoid, rig.Controller
+		if humanoid and humanoid.Parent then
+			activeHumanoids[humanoid] = true
+			if aimCharacterState.Humanoids[humanoid] == nil then
+				aimCharacterState.Humanoids[humanoid] = humanoid.AutoRotate
+			end
+			humanoid.AutoRotate = false
+		end
+		if controller and controller.Parent then
+			activeControllers[controller] = true
+			if aimCharacterState.Controllers[controller] == nil then
+				aimCharacterState.Controllers[controller] = controller.FacingDirection
+			end
+			controller.FacingDirection = direction
+		end
+		local desiredRoot = CFrame.lookAt(root.Position, root.Position + direction)
 		local pivotFromRoot = root.CFrame:ToObjectSpace(character:GetPivot())
 		character:PivotTo(desiredRoot * pivotFromRoot)
+		root.CFrame = desiredRoot
+		root.AssemblyAngularVelocity = Vector3.zero
 	end
-	root.CFrame = desiredRoot
-	root.AssemblyAngularVelocity = Vector3.zero
+	-- Restore replaced rigs immediately, including respawns during a lock.
+	for humanoid, autoRotate in pairs(aimCharacterState.Humanoids) do
+		if not activeHumanoids[humanoid] then
+			if humanoid.Parent then humanoid.AutoRotate = autoRotate end
+			aimCharacterState.Humanoids[humanoid] = nil
+		end
+	end
+	for controller, facingDirection in pairs(aimCharacterState.Controllers) do
+		if not activeControllers[controller] then
+			if controller.Parent then controller.FacingDirection = facingDirection end
+			aimCharacterState.Controllers[controller] = nil
+		end
+	end
 end
 
 local aimRenderStepName = "KBACClientAim_" .. game:GetService("HttpService"):GenerateGUID(false)
@@ -1874,7 +1927,7 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 		setAimStatus("AIM: camera unavailable")
 		lockedAimModel = nil
 		restoreAimCameraControl()
-		restoreAimAutoRotate()
+		restoreAimCharacterControl()
 		return
 	end
 	if savedAimCamera and savedAimCamera ~= camera then restoreAimCameraControl() end
@@ -1943,7 +1996,7 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 		if not next(aimCandidates) then setAimStatus("AIM: no characters found") end
 		lockedAimModel = nil
 		restoreAimCameraControl()
-		restoreAimAutoRotate()
+		restoreAimCharacterControl()
 		return
 	end
 
@@ -1956,7 +2009,8 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 		end
 	end
 
-	local root, humanoid, character = getLocalAimRoot()
+	local rigs = getLocalAimRigs()
+	local root = if rigs[1] then rigs[1].Root else nil
 	local hasRoot = root ~= nil and root.Parent ~= nil
 	if not savedAimCamera then
 		savedAimCamera = camera
@@ -1975,14 +2029,6 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 	end
 
 	local aimPoint = targetPart.Position
-	if humanoid ~= savedAimHumanoid then
-		restoreAimAutoRotate()
-		if humanoid then
-			savedAimHumanoid = humanoid
-			savedAutoRotate = humanoid.AutoRotate
-			humanoid.AutoRotate = false
-		end
-	end
 
 	local cameraPosition = camera.CFrame.Position
 	if hasRoot and root then
@@ -1995,23 +2041,20 @@ RunService:BindToRenderStep(aimRenderStepName, Enum.RenderPriority.Last.Value, f
 	if (aimPoint - cameraPosition).Magnitude > 0.01 then
 		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
 		camera.Focus = CFrame.new(aimPoint)
-		if hasRoot and root then
-			faceAimCharacter(root, humanoid, character, camera.CFrame.LookVector)
-		end
+		faceAimCharacters(rigs, camera.CFrame.LookVector)
 	end
 	setAimStatus(if hasRoot then "AIM: target locked" else "AIM: camera locked; character missing")
 end)
 
-local aimSimulationConnection = RunService.PreSimulation:Connect(function()
+local function updateAimCharacterRotation()
 	if not aimEnabled or not lockedAimModel or not trackedHighlights[lockedAimModel] then return end
 	local head = getAimHeadPart(lockedAimModel)
 	local camera = workspace.CurrentCamera
-	if not head or not camera then return end
-	local root, humanoid, character = getLocalAimRoot()
-	if root and root.Parent then
-		faceAimCharacter(root, humanoid, character, head.Position - camera.CFrame.Position)
-	end
-end)
+	if not head or not camera or not savedAimCamera then return end
+	faceAimCharacters(getLocalAimRigs(), camera.CFrame.LookVector)
+end
+local aimSimulationConnection = RunService.PreSimulation:Connect(updateAimCharacterRotation)
+local aimPostSimulationConnection = RunService.PostSimulation:Connect(updateAimCharacterRotation)
 
 RunService.RenderStepped:Connect(function()
 	if not espEnabled and not tracerEnabled then return end
@@ -2249,10 +2292,11 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
 	aimSimulationConnection:Disconnect()
+	aimPostSimulationConnection:Disconnect()
 	RunService:UnbindFromRenderStep(aimRenderStepName)
 	if aimOverlayGui.Parent then aimOverlayGui:Destroy() end
 	restoreAimCameraControl()
-	restoreAimAutoRotate()
+	restoreAimCharacterControl()
 	for model in pairs(trackedHighlights) do destroyTracked(model) end
 	if effectsFolder.Parent then effectsFolder:Destroy() end
 	if blur.Parent then blur:Destroy() end
