@@ -1307,9 +1307,8 @@ local savedAutoRotate: boolean? = nil
 local savedAimCamera: Camera? = nil
 local savedAimCameraType = Enum.CameraType.Custom
 local savedAimMouseBehavior = Enum.MouseBehavior.Default
-local savedAimCameraOffset: Vector3? = nil
+local savedAimWorldOffset: Vector3? = nil
 local lockedAimModel: Model? = nil
-local lockedAimPart: BasePart? = nil
 local aimLockStartedAt = 0
 local aimMouseTravel = 0
 
@@ -1327,7 +1326,7 @@ local function restoreAimCameraControl()
 		UserInputService.MouseBehavior = savedAimMouseBehavior
 	end
 	savedAimCamera = nil
-	savedAimCameraOffset = nil
+	savedAimWorldOffset = nil
 	aimMouseTravel = 0
 end
 
@@ -1548,7 +1547,6 @@ local function setAimEnabled(shouldEnable: boolean)
 	aimCircle.Visible = aimEnabled
 	if not aimEnabled then
 		lockedAimModel = nil
-		lockedAimPart = nil
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
 	end
@@ -1803,20 +1801,17 @@ local function getLocalAimRoot(): (BasePart?, Humanoid?, Model?)
 	return nil, nil, nil
 end
 
-local aimMuzzleNames = {"Muzzle", "MuzzleAttachment", "BarrelEnd", "FirePoint", "ShootPoint"}
-local function getAimMuzzlePosition(character: Model): Vector3?
-	local weapon = character:FindFirstChildWhichIsA("Tool")
-	local searchRoot: Instance = weapon or character
-	for _, name in ipairs(aimMuzzleNames) do
-		local muzzle = searchRoot:FindFirstChild(name, true)
-		if muzzle and muzzle:IsA("Attachment") then return muzzle.WorldPosition end
-		if muzzle and muzzle:IsA("BasePart") then return muzzle.Position end
+local function faceAimCharacter(root: BasePart, humanoid: Humanoid?, character: Model?, lookDirection: Vector3)
+	local horizontalDirection = Vector3.new(lookDirection.X, 0, lookDirection.Z)
+	if horizontalDirection.Magnitude < 0.001 then return end
+	if humanoid then humanoid.AutoRotate = false end
+	local desiredRoot = CFrame.lookAt(root.Position, root.Position + horizontalDirection.Unit)
+	if character and character.Parent then
+		local pivotFromRoot = root.CFrame:ToObjectSpace(character:GetPivot())
+		character:PivotTo(desiredRoot * pivotFromRoot)
 	end
-	if weapon then
-		local handle = weapon:FindFirstChild("Handle", true)
-		if handle and handle:IsA("BasePart") then return handle.Position end
-	end
-	return nil
+	root.CFrame = desiredRoot
+	root.AssemblyAngularVelocity = Vector3.zero
 end
 
 RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, function()
@@ -1842,18 +1837,13 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 	if lockedAimModel then
 		local humanoid = lockedAimModel:FindFirstChildWhichIsA("Humanoid", true)
 		if lockedAimModel.Parent and aimCandidates[lockedAimModel] and (not humanoid or humanoid.Health > 0) then
-			local highlightedParts = trackedPlayerParts[lockedAimModel]
-			if lockedAimPart and highlightedParts and highlightedParts[lockedAimPart] and lockedAimPart.Parent then
-				targetPart = lockedAimPart
-			end
+			targetPart = getBodyPart(lockedAimModel, "Head")
 		else
 			lockedAimModel = nil
-			lockedAimPart = nil
 		end
 	end
 	if lockedAimModel and not targetPart then
 		lockedAimModel = nil
-		lockedAimPart = nil
 	end
 
 	if not lockedAimModel then
@@ -1864,8 +1854,9 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 			if model.Parent and not isLocalPlayerModel(model) then
 				local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 				if not humanoid or humanoid.Health > 0 then
+					local head = getBodyPart(model, "Head")
 					local highlightedParts = trackedPlayerParts[model]
-					if highlightedParts then
+					if head and highlightedParts then
 						for part in pairs(highlightedParts) do
 							if part.Parent and part:IsDescendantOf(model) then
 								candidateCount += 1
@@ -1875,9 +1866,8 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 									nearestDistance = math.min(nearestDistance, distance)
 									if distance <= closestDistance then
 										closestDistance = distance
-										targetPart = part
+										targetPart = head
 										lockedAimModel = model
-										lockedAimPart = part
 									end
 								end
 							end
@@ -1900,7 +1890,6 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 	if not targetPart or not targetPart.Parent then
 		if not next(aimCandidates) then setAimStatus("AIM: no characters found") end
 		lockedAimModel = nil
-		lockedAimPart = nil
 		restoreAimCameraControl()
 		restoreAimAutoRotate()
 		return
@@ -1943,38 +1932,33 @@ RunService:BindToRenderStep("KBACClientAim", Enum.RenderPriority.Last.Value, fun
 		end
 	end
 
-	if hasRoot and root then
-		local horizontalTarget = Vector3.new(aimPoint.X, root.Position.Y, aimPoint.Z)
-		local toTarget = horizontalTarget - root.Position
-		local distance = toTarget.Magnitude
-		if distance > 0.01 then
-			local direction = toTarget / distance
-			local muzzlePosition = if character then getAimMuzzlePosition(character) else nil
-			if muzzlePosition then
-				local rightOffset = root.CFrame:PointToObjectSpace(muzzlePosition).X
-				if math.abs(rightOffset) < distance then
-					local correction = -math.asin(rightOffset / distance)
-					local right = Vector3.new(-direction.Z, 0, direction.X)
-					direction = direction * math.cos(correction) + right * math.sin(correction)
-				end
-			end
-			root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
-		end
-	end
-
 	local cameraPosition = camera.CFrame.Position
 	if hasRoot and root then
-		if savedAimCameraOffset then
-			cameraPosition = root.CFrame:PointToWorldSpace(savedAimCameraOffset)
+		if savedAimWorldOffset then
+			cameraPosition = root.Position + savedAimWorldOffset
 		else
-			savedAimCameraOffset = root.CFrame:PointToObjectSpace(cameraPosition)
+			savedAimWorldOffset = cameraPosition - root.Position
 		end
 	end
 	if (aimPoint - cameraPosition).Magnitude > 0.01 then
 		camera.CFrame = CFrame.lookAt(cameraPosition, aimPoint)
 		camera.Focus = CFrame.new(aimPoint)
+		if hasRoot and root then
+			faceAimCharacter(root, humanoid, character, camera.CFrame.LookVector)
+		end
 	end
 	setAimStatus(if hasRoot then "AIM: target locked" else "AIM: camera locked; character missing")
+end)
+
+local aimSimulationConnection = RunService.PreSimulation:Connect(function()
+	if not aimEnabled or not lockedAimModel or not trackedHighlights[lockedAimModel] then return end
+	local head = getBodyPart(lockedAimModel, "Head")
+	local camera = workspace.CurrentCamera
+	if not head or not camera then return end
+	local root, humanoid, character = getLocalAimRoot()
+	if root and root.Parent then
+		faceAimCharacter(root, humanoid, character, head.Position - camera.CFrame.Position)
+	end
 end)
 
 RunService.RenderStepped:Connect(function()
@@ -2212,6 +2196,7 @@ gui.DescendantAdded:Connect(disableAutoLocalization)
 
 gui.Destroying:Connect(function()
 	if cameraConnection then cameraConnection:Disconnect() end
+	aimSimulationConnection:Disconnect()
 	RunService:UnbindFromRenderStep("KBACClientAim")
 	if aimOverlayGui.Parent then aimOverlayGui:Destroy() end
 	restoreAimCameraControl()
