@@ -56,6 +56,12 @@ local i18n = {
 	Bindings = {} :: {[Instance]: string},
 	OnChanged = nil :: (() -> ())?,
 	Russian = {
+		["HOTKEY"] = "ГОРЯЧАЯ КЛАВИША",
+		["ASSIGN"] = "НАЗНАЧИТЬ",
+		["PRESS A KEY"] = "НАЖМИ КЛАВИШУ",
+		["KEY IN USE"] = "КЛАВИША ЗАНЯТА",
+		["CHOOSE ANOTHER KEY"] = "ВЫБЕРИ ДРУГУЮ",
+		["Esc: cancel · Backspace: clear"] = "Отмена: эскейп · Сброс: бэкспейс",
 		["SPEED"] = "СКОРОСТЬ",
 		["Adjust walking speed"] = "Настройка скорости передвижения",
 		["WALK SPEED"] = "СКОРОСТЬ ХОДЬБЫ",
@@ -193,7 +199,7 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 1000
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
-gui:SetAttribute("ClientBuild", "camera-flight-2")
+gui:SetAttribute("ClientBuild", "hotkeys-1")
 gui:SetAttribute("AimStatus", "Temporarily unavailable")
 gui:SetAttribute("HitboxEnabled", false)
 
@@ -440,6 +446,129 @@ end
 setupMenuSnow()
 -- END MENU SNOW
 
+-- One dispatcher for menu shortcuts and feature hotkeys. Shared features use
+-- one entry even when their controls appear in several tabs.
+local function setupHotkeys()
+	local manager = {Entries = {}, ByKey = {}, Held = {}, Capturing = nil, InputConnection = nil} :: any
+	local connections = {}
+	local function refresh(entry)
+		for _, button in ipairs(entry.Controls) do
+			if manager.Capturing and manager.Capturing.Entry == entry then
+				i18n.Text(button, manager.Capturing.Status)
+			elseif entry.Key then
+				-- Physical key names stay the same in both interface languages.
+				i18n.Text(button, "")
+				button.Text = tostring(entry.Key):match("[^.]+$") or tostring(entry.Key)
+			else i18n.Text(button, "ASSIGN") end
+			button.BackgroundColor3 = if entry.Key then Color3.fromRGB(23, 126, 76) else Color3.fromRGB(65, 75, 92)
+			button.BackgroundTransparency = if entry.Key then 0.25 else 0.45
+		end
+	end
+	function manager.Cancel()
+		local capture = manager.Capturing
+		manager.Capturing = nil
+		if capture then refresh(capture.Entry) end
+	end
+	function manager.AddControl(parent: Instance, id: string, y: number, action: () -> ())
+		local entry = manager.Entries[id]
+		if not entry then
+			entry = {Controls = {}, Action = action, Key = nil}
+			manager.Entries[id] = entry
+		end
+		entry.Action = action
+		local row = Instance.new("Frame")
+		row.Name = "HotkeyRow"
+		row:SetAttribute("HotkeyId", id)
+		row.Position = UDim2.fromOffset(12, y + 4)
+		row.Size = UDim2.new(1, -24, 0, 60)
+		row.BackgroundTransparency = 1 row.ZIndex = 21 row.Parent = parent
+		local caption = Instance.new("TextLabel")
+		caption.Name = "HotkeyLabel" caption.Size = UDim2.new(0.5, -6, 0, 30)
+		caption.BackgroundTransparency = 1 caption.Font = Enum.Font.GothamBold
+		caption.TextColor3 = COLORS.muted caption.TextSize = 10 caption.TextXAlignment = Enum.TextXAlignment.Left
+		caption.TextScaled = true caption.ZIndex = 21 caption.Parent = row i18n.Text(caption, "HOTKEY")
+		local captionLimit = Instance.new("UITextSizeConstraint")
+		captionLimit.MinTextSize = 8 captionLimit.MaxTextSize = 10 captionLimit.Parent = caption
+		local button = Instance.new("TextButton")
+		button.Name = "HotkeyButton" button.Position = UDim2.fromScale(0.5, 0) button.Size = UDim2.new(0.5, 0, 0, 30)
+		button.BorderSizePixel = 0 button.Font = Enum.Font.GothamSemibold button.TextColor3 = COLORS.white
+		button.TextScaled = true button.AutoButtonColor = false button.ZIndex = 22 button.Parent = row
+		corner(button, 10) stroke(button, 0.55)
+		local limit = Instance.new("UITextSizeConstraint")
+		limit.MinTextSize = 8 limit.MaxTextSize = 11 limit.Parent = button
+		local help = caption:Clone()
+		help.Name = "HotkeyHelp" help.Position = UDim2.fromOffset(0, 36) help.Size = UDim2.new(1, 0, 0, 18)
+		help.Font = Enum.Font.GothamMedium help.Parent = row i18n.Text(help, "Esc: cancel · Backspace: clear")
+		table.insert(entry.Controls, button)
+		button.Activated:Connect(function()
+			local previous = manager.Capturing
+			manager.Cancel()
+			if previous and previous.Button == button then return end
+			manager.Capturing = {Entry = entry, Button = button, Status = "PRESS A KEY"}
+			refresh(entry)
+		end)
+		refresh(entry)
+	end
+	function manager.Handle(input: InputObject, processed: boolean): boolean
+		if input.UserInputType ~= Enum.UserInputType.Keyboard then return false end
+		if UserInputService:GetFocusedTextBox() then return true end
+		local key = input.KeyCode
+		local capture = manager.Capturing
+		if capture then
+			local ancestor = capture.Button :: Instance?
+			while ancestor and ancestor ~= gui do
+				if ancestor:IsA("GuiObject") and not (ancestor :: GuiObject).Visible then
+					manager.Cancel()
+					return true
+				end
+				ancestor = ancestor.Parent
+			end
+			if not ancestor then manager.Cancel() return true end
+			if manager.Held[key] then return true end
+			manager.Held[key] = true
+			if key == Enum.KeyCode.Escape then manager.Cancel() return true end
+			local entry = capture.Entry
+			if key == Enum.KeyCode.Backspace or key == Enum.KeyCode.Delete then
+				if entry.Key then manager.ByKey[entry.Key] = nil end
+				entry.Key = nil manager.Cancel() return true
+			end
+			if key == Enum.KeyCode.Unknown or key == Enum.KeyCode.LeftShift or key == Enum.KeyCode.RightShift
+				or key == Enum.KeyCode.LeftControl or key == Enum.KeyCode.RightControl
+				or key == Enum.KeyCode.LeftAlt or key == Enum.KeyCode.RightAlt
+				or key == Enum.KeyCode.LeftMeta or key == Enum.KeyCode.RightMeta then
+				capture.Status = "CHOOSE ANOTHER KEY" refresh(entry) return true
+			end
+			if manager.ByKey[key] and manager.ByKey[key] ~= entry then
+				capture.Status = "KEY IN USE" refresh(entry) return true
+			end
+			if entry.Key then manager.ByKey[entry.Key] = nil end
+			entry.Key = key manager.ByKey[key] = entry
+			manager.Cancel()
+			return true
+		end
+		if processed then return true end
+		if manager.Held[key] then return true end
+		manager.Held[key] = true
+		local entry = manager.ByKey[key]
+		if entry then entry.Action() return true end
+		return false
+	end
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Keyboard then manager.Held[input.KeyCode] = nil end
+	end))
+	table.insert(connections, UserInputService.WindowFocusReleased:Connect(function()
+		table.clear(manager.Held) manager.Cancel()
+	end))
+	gui.Destroying:Connect(function()
+		if manager.InputConnection then manager.InputConnection:Disconnect() end
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		manager.Capturing = nil
+		table.clear(manager.Entries) table.clear(manager.ByKey) table.clear(manager.Held)
+	end)
+	return manager
+end
+local hotkeys = setupHotkeys()
+
 local title = Instance.new("TextLabel")
 title.Name = "Title"
 title.Position = UDim2.fromOffset(28, 18)
@@ -678,6 +807,7 @@ local quickTween = TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirect
 
 local function switchTab(name: string)
 	if not pages[name] or selectedTab == name then return end
+	hotkeys.Cancel()
 	selectedTab = name
 	for id, record in pairs(pages) do
 		record.Page.Visible = (id == name)
@@ -1368,7 +1498,7 @@ corner(toggleKnob, 12)
 local settings = Instance.new("Frame")
 settings.Name = "Settings"
 settings.Position = UDim2.fromOffset(12, 76)
-settings.Size = UDim2.new(1, -24, 0, 128)
+settings.Size = UDim2.new(1, -24, 0, 200)
 settings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
 settings.BackgroundTransparency = 0.54
 settings.BorderSizePixel = 0
@@ -1580,7 +1710,7 @@ corner(tracerKnob, 12)
 
 local tracerSettings = Instance.new("Frame")
 tracerSettings.Position = UDim2.fromOffset(12, 76)
-tracerSettings.Size = UDim2.new(1, -24, 0, 168)
+tracerSettings.Size = UDim2.new(1, -24, 0, 240)
 tracerSettings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
 tracerSettings.BackgroundTransparency = 0.54
 tracerSettings.BorderSizePixel = 0
@@ -1752,7 +1882,7 @@ UserInputService.InputEnded:Connect(function(input: InputObject)
 end)
 refreshTracerSizeUI()
 
-tracerToggle.Activated:Connect(function()
+local function toggleTracers()
 	tracerEnabled = not tracerEnabled
 	TweenService:Create(tracerToggle, quickTween, {
 		BackgroundColor3 = tracerEnabled and Color3.fromRGB(23, 126, 76) or Color3.fromRGB(104, 112, 127),
@@ -1765,13 +1895,16 @@ tracerToggle.Activated:Connect(function()
 		for _, line in pairs(tracerLines) do line.Visible = false end
 		for _, arrow in pairs(tracerArrows) do arrow.Visible = false end
 	end
-end)
+end
+tracerToggle.Activated:Connect(toggleTracers)
+hotkeys.AddControl(tracerSettings, "BloxTracers", 168, toggleTracers)
 
 tracerOpen.Activated:Connect(function()
+	hotkeys.Cancel()
 	tracerExpanded = not tracerExpanded
 	tracerSettings.Visible = true
 	TweenService:Create(tracerCard, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-		Size = UDim2.new(1, -10, 0, tracerExpanded and 256 or 68),
+		Size = UDim2.new(1, -10, 0, tracerExpanded and 328 or 68),
 	}):Play()
 	if not tracerExpanded then task.delay(0.25, function() if not tracerExpanded then tracerSettings.Visible = false end end) end
 end)
@@ -1848,7 +1981,7 @@ do
 	local settingsPanel = Instance.new("Frame")
 	settingsPanel.Name = "HitboxSettings"
 	settingsPanel.Position = UDim2.fromOffset(12, 76)
-	settingsPanel.Size = UDim2.new(1, -24, 0, 78)
+	settingsPanel.Size = UDim2.new(1, -24, 0, 150)
 	settingsPanel.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
 	settingsPanel.BackgroundTransparency = 0.54
 	settingsPanel.BorderSizePixel = 0
@@ -1952,7 +2085,7 @@ do
 	end))
 	minus.Activated:Connect(function() setSize(hitbox.Multiplier - 0.5) end)
 	plus.Activated:Connect(function() setSize(hitbox.Multiplier + 0.5) end)
-	button.Activated:Connect(function()
+	local function toggleHitbox()
 		hitbox.Enabled = not hitbox.Enabled
 		gui:SetAttribute("HitboxEnabled", hitbox.Enabled)
 		TweenService:Create(button, quickTween, {
@@ -1965,12 +2098,15 @@ do
 		if hitbox.Enabled then scanCharacters() end
 		gui:SetAttribute("HitboxCount", hitbox.Sync())
 		refreshESPVisuals()
-	end)
+	end
+	button.Activated:Connect(toggleHitbox)
+	hotkeys.AddControl(settingsPanel, "BloxHitbox", 78, toggleHitbox)
 	open.Activated:Connect(function()
+		hotkeys.Cancel()
 		expanded = not expanded
 		settingsPanel.Visible = true
 		TweenService:Create(hitboxCard, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-			Size = UDim2.new(1, -10, 0, if expanded then 166 else 68),
+			Size = UDim2.new(1, -10, 0, if expanded then 238 else 68),
 		}):Play()
 		if not expanded then task.delay(0.25, function() if not expanded then settingsPanel.Visible = false end end) end
 	end)
@@ -1981,6 +2117,7 @@ local hitboxHeartbeat = RunService.Heartbeat:Connect(function()
 end)
 
 local function switchBloxCategory(name: string)
+	hotkeys.Cancel()
 	selectedBloxCategory = name
 	bloxModules.CanvasPosition = Vector2.zero
 	card.Visible = name == "Visuals"
@@ -2008,7 +2145,7 @@ for categoryName, record in pairs(categoryButtons) do
 end
 switchBloxCategory("Combat")
 
-toggle.Activated:Connect(function()
+local function toggleESP()
 	espEnabled = not espEnabled
 	TweenService:Create(toggle, quickTween, {
 		BackgroundColor3 = espEnabled and Color3.fromRGB(23, 126, 76) or Color3.fromRGB(50, 55, 66),
@@ -2019,13 +2156,16 @@ toggle.Activated:Connect(function()
 	}):Play()
 	scanCharacters()
 	refreshESPVisuals()
-end)
+end
+toggle.Activated:Connect(toggleESP)
+hotkeys.AddControl(settings, "BloxESP", 128, toggleESP)
 
 cardButton.Activated:Connect(function()
+	hotkeys.Cancel()
 	espExpanded = not espExpanded
 	settings.Visible = true
 	TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-		Size = UDim2.new(1, -10, 0, espExpanded and 216 or 68),
+		Size = UDim2.new(1, -10, 0, espExpanded and 288 or 68),
 	}):Play()
 	if not espExpanded then task.delay(0.25, function() if not espExpanded then settings.Visible = false end end) end
 end)
@@ -2890,7 +3030,7 @@ local function setupRivalsPage()
 		local settings = Instance.new("Frame")
 		settings.Name = "Settings"
 		settings.Position = UDim2.fromOffset(12, 76)
-		settings.Size = UDim2.new(1, -24, 0, height)
+		settings.Size = UDim2.new(1, -24, 0, height + 72)
 		settings.BackgroundColor3 = Color3.fromRGB(25, 32, 46)
 		settings.BackgroundTransparency = 0.54
 		settings.BorderSizePixel = 0
@@ -2899,13 +3039,10 @@ local function setupRivalsPage()
 		settings.Parent = card
 		corner(settings, 15)
 		stroke(settings, 0.58)
-		local record = {Card = card, Settings = settings, Height = height, Expanded = false, Category = category}
+		local record = {Card = card, Settings = settings, Height = height + 72, Expanded = false, Category = category}
 		table.insert(cards, record)
 		open.Activated:Connect(function()
-			if height == 0 then
-				setCardEnabled(key)
-				return
-			end
+			hotkeys.Cancel()
 			local expand = not record.Expanded
 			for _, entry in ipairs(cards) do
 				entry.Expanded = entry == record and expand
@@ -2926,6 +3063,8 @@ local function setupRivalsPage()
 		toggle.Activated:Connect(function()
 			setCardEnabled(key)
 		end)
+		local hotkeyId = if key == "Noclip" or key == "InfiniteJump" then "Global" .. key else "Rivals" .. key
+		hotkeys.AddControl(settings, hotkeyId, height, function() setCardEnabled(key) end)
 		return settings
 	end
 
@@ -3169,6 +3308,7 @@ local function setupRivalsPage()
 	otherEmpty.Visible = false
 	local categoryButtons = {}
 	local function selectCategory(name: string)
+		hotkeys.Cancel()
 		gui:SetAttribute("RivalsCategory", name)
 		modules.CanvasPosition = Vector2.new(0, 0)
 		for _, entry in ipairs(cards) do
@@ -3458,7 +3598,7 @@ local function setupOtherTools()
 		local subtitle = label(open, "Description", description, 34) subtitle.TextTruncate = Enum.TextTruncate.AtEnd
 		local toggle = button(card, "Toggle", if key == "Teleport" then "OPEN" else "OFF", UDim2.new(1, -70, 0, 19), UDim2.fromOffset(56, 30))
 		local settings = Instance.new("Frame")
-		settings.Name = "Settings" settings.Position = UDim2.fromOffset(12, 76) settings.Size = UDim2.new(1, -24, 0, height)
+		settings.Name = "Settings" settings.Position = UDim2.fromOffset(12, 76) settings.Size = UDim2.new(1, -24, 0, height + 72)
 		settings.BackgroundColor3 = Color3.fromRGB(25, 32, 46) settings.BackgroundTransparency = 0.54
 		settings.BorderSizePixel = 0 settings.Visible = false settings.ZIndex = 18 settings.Parent = card
 		corner(settings, 15) stroke(settings, 0.58)
@@ -3466,10 +3606,11 @@ local function setupOtherTools()
 		quick.Name = "Global" .. key .. "QuickToggle" quick.Visible = false quick.TextScaled = true quick.TextWrapped = true
 		quick.ZIndex = 60 quick.Parent = gui i18n.Text(quick, quickText)
 		local textLimit = Instance.new("UITextSizeConstraint") textLimit.MinTextSize = 8 textLimit.MaxTextSize = 13 textLimit.Parent = quick
-		local record = {Key = key, Card = card, Settings = settings, Height = height, Quick = quick, Toggle = toggle,
+		local record = {Key = key, Card = card, Settings = settings, Height = height + 72, Quick = quick, Toggle = toggle,
 			Pinned = false, Moved = false, Dragging = false, Dragged = false, Input = nil}
 		table.insert(records, record)
 		local function expand()
+			hotkeys.Cancel()
 			expanded = if expanded == record then nil else record
 			for _, entry in ipairs(records) do
 				entry.Settings.Visible = expanded == entry
@@ -3504,6 +3645,7 @@ local function setupOtherTools()
 		pin.Activated:Connect(function()
 			record.Pinned = not record.Pinned i18n.Text(pin, if record.Pinned then "ON" else "OFF") paint(pin, record.Pinned) placeQuickButtons()
 		end)
+		hotkeys.AddControl(settings, "Global" .. key, height, function() activate(key) end)
 		return record
 	end
 	local function slider(record, key, title)
@@ -3666,6 +3808,7 @@ local function pressEffect(button: GuiButton)
 end
 
 local function setOpen(shouldOpen: boolean)
+	if not shouldOpen then hotkeys.Cancel() end
 	if animating or opened == shouldOpen then return end
 	animating = true
 	opened = shouldOpen
@@ -3699,8 +3842,8 @@ closeButton.Activated:Connect(function()
 	setOpen(false)
 end)
 
-UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-	if processed then return end
+hotkeys.InputConnection = UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
+	if hotkeys.Handle(input, processed) then return end
 	if input.KeyCode == Enum.KeyCode.K then setOpen(not opened) end
 end)
 
